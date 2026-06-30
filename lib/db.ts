@@ -1,21 +1,22 @@
-import { Pool } from 'pg';
+import { Client } from 'pg';
 
-// Connection pool for TimescaleDB
-// Vercel serverless reuses the same container for warm requests
-const pool = new Pool({
-  connectionString: process.env.TIMESCALEDB_TRADING_URL,
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-});
+// Direct connection per request — works reliably in Vercel serverless
+// Pool-based connections fail because each request may spin up a new container
 
 export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
-  const client = await pool.connect();
+  const client = new Client({
+    connectionString: process.env.TIMESCALEDB_TRADING_URL,
+    connectionTimeoutMillis: 15000,
+    ssl: {
+      rejectUnauthorized: false, // Allow self-signed certs (TimescaleDB cloud)
+    },
+  });
+  await client.connect();
   try {
     const result = await client.query(sql, params || []);
     return result.rows as T[];
   } finally {
-    client.release();
+    await client.end();
   }
 }
 
