@@ -1,0 +1,27 @@
+{
+  "name": "trading-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.1",
+    "next": "14.2.5",
+    "pg": "^8.13.0",
+    "react": "^18.3.1",
+    "react-chartjs-2": "^5.3.1",
+    "react-dom": "^18.3.1",
+    "swr": "^2.4.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.43",
+    "@types/pg": "^8.20.0",
+    "@types/react": "18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "typescript": "5.9.3"
+  }
+}
