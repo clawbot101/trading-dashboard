@@ -6,7 +6,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { db } from '../../../lib/db';
-import { getOrderEvents } from '../../../lib/queries/trades';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -24,53 +23,18 @@ const OrdersParamsSchema = z.object({
 export async function GET(req: NextRequest) {
   try {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
-    const params = OrdersParamsSchema.parse(raw);
+    const q = OrdersParamsSchema.parse(raw);
 
-    // Convert "all" to undefined for queries
-    const venue = params.venue === 'all' ? undefined : params.venue;
-    const strategy = params.strategy === 'all' ? undefined : params.strategy;
-
-    // Map range to timeRange format
-    const timeRange = params.range.toUpperCase();
-
-    // Run query
-    const orderEvents = await getOrderEvents(
-      timeRange,
-      venue,
-      strategy,
-      params.symbol,
-      params.page,
-      params.pageSize
-    );
-
-    // Build response
-    const response = {
-      ok: true,
-      as_of: new Date().toISOString(),
-      page: params.page,
-      pageSize: params.pageSize,
-      data: {
-        orderEvents,
-      },
-    };
-
-    return NextResponse.json(response);
+    // TODO replace with real query
+    return NextResponse.json({ ok: true, query: q, data: {}, as_of_ts: new Date().toISOString() });
   } catch (err: any) {
     console.error("[api/orders] error", {
       message: err?.message,
       code: err?.code,
       stack: err?.stack,
     });
-
-    if (err instanceof z.ZodError) {
-      return NextResponse.json(
-        { ok: false, error: 'Invalid parameters', details: err.errors },
-        { status: 400 }
-      );
-    }
-
     return NextResponse.json(
-      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
+      { ok: false, error: err?.message ?? "Internal server error", code: err?.code ?? null },
       { status: 500 }
     );
   }
