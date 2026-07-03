@@ -53,12 +53,14 @@ function convertNumerics(obj: any): any {
   
   const result: any = {};
   for (const [key, value] of Object.entries(obj)) {
-    if (typeof value === 'string' && /^\d+\.\d+$/.test(value)) {
-      // Numeric string like "123.456789"
-      result[key] = parseFloat(value);
-    } else if (typeof value === 'string' && /^-?\d+$/.test(value) && value.length > 10) {
-      // Large integer string (timestamp or big number)
-      result[key] = parseInt(value, 10);
+    if (typeof value === 'string') {
+      // Try to parse as number if it looks numeric
+      const num = Number(value);
+      if (!isNaN(num) && value.trim() !== '' && (value.includes('.') || /^-?\d+$/.test(value))) {
+        result[key] = num;
+      } else {
+        result[key] = value;
+      }
     } else {
       result[key] = value;
     }
