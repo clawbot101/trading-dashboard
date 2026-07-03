@@ -9,8 +9,14 @@ function createPool() {
   const connectionString = process.env.DATABASE_URL || process.env.TIMESCALEDB_TRADING_URL;
   if (!connectionString) throw new Error("DATABASE_URL is not set");
 
+  // Parse connection string to remove sslmode and use Pool ssl config instead
+  // Connection string format: postgres://user:pass@host:port/db?sslmode=require
+  const url = new URL(connectionString);
+  url.searchParams.delete('sslmode'); // Remove sslmode from URL
+  const cleanConnectionString = url.toString();
+
   return new Pool({
-    connectionString,
+    connectionString: cleanConnectionString,
     ssl: { rejectUnauthorized: false },
     max: 10,
     idleTimeoutMillis: 30_000,
