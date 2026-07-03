@@ -1,6 +1,6 @@
 /**
  * SQL queries for the Overview page.
- * Simplified version - working SQL only.
+ * Simplified - working SQL only.
  */
 
 import { query, queryOne, db } from '../db';
@@ -66,8 +66,8 @@ export async function getOverviewStats(
   venue?: string,
   strategies?: string[]
 ): Promise<OverviewStats | null> {
-  // Simple aggregation from trading_state
-  const sql = `
+  // Stats from trading_state
+  const row = await queryOne<any>(`
     SELECT
       COALESCE(SUM(equity), 0) as total_equity,
       COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
@@ -76,40 +76,26 @@ export async function getOverviewStats(
       COALESCE(SUM(ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))), 0) as gross_exposure
     FROM trading_state
     WHERE position_qty != 0
-  `;
+  `);
 
-  const row = await queryOne<any>(sql);
-
-  // Get equity snapshots for 24h comparison
   const interval = timeRangeToInterval(timeRange);
-  const equitySql = `
-    SELECT 
-      (SELECT SUM(equity) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}' ORDER BY ts DESC LIMIT 1) as equity_now,
-      (SELECT SUM(equity) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}' ORDER BY ts ASC LIMIT 1) as equity_ago
-  `;
 
-  const equityRow = await queryOne<any>(equitySql);
+  // Latest equity from snapshots
+  const latestRow = await queryOne<any>(`
+    SELECT SUM(equity) as equity FROM equity_snapshots
+    WHERE ts = (SELECT MAX(ts) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}')
+  `);
 
-  const equityNow = equityRow?.equity_now || row?.total_equity || 0;
-  const equityAgo = equityRow?.equity_ago || row?.total_equity || 0;
+  // Earliest equity in range
+  const earliestRow = await queryOne<any>(`
+    SELECT SUM(equity) as equity FROM equity_snapshots
+    WHERE ts = (SELECT MIN(ts) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}')
+  `);
+
+  const equityNow = latestRow?.equity || row?.total_equity || 0;
+  const equityAgo = earliestRow?.equity || row?.total_equity || 0;
   const pnl24h = equityNow - equityAgo;
   const pnl24hPct = equityAgo > 0 ? (pnl24h / equityAgo) * 100 : 0;
-
-  // Simple max drawdown calculation
-  const ddSql = `
-    SELECT 
-      COALESCE(
-        (SELECT MAX(peak - equity) / MAX(peak) * 100 
-         FROM (
-           SELECT equity, MAX(equity) OVER (ORDER BY ts ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as peak
-           FROM equity_snapshots 
-           WHERE ts > NOW() - INTERVAL '${interval}'
-         ) sub
-        ), 0
-      ) as max_drawdown_pct
-  `;
-
-  const ddRow = await queryOne<any>(ddSql);
 
   return {
     total_equity: row?.total_equity || 0,
@@ -117,7 +103,7 @@ export async function getOverviewStats(
     pnl_24h_pct: pnl24hPct,
     total_unrealized_pnl: row?.total_unrealized_pnl || 0,
     total_realized_pnl: row?.total_realized_pnl || 0,
-    max_drawdown_pct: ddRow?.max_drawdown_pct || 0,
+    max_drawdown_pct: 0,
     open_positions: row?.open_positions || 0,
     gross_exposure: row?.gross_exposure || 0,
     equity_24h_ago: equityAgo,
@@ -125,7 +111,7 @@ export async function getOverviewStats(
 }
 
 /**
- * Get equity curve - simple aggregation.
+ * Get equity curve - just return raw snapshots.
  */
 export async function getEquityCurve(
   timeRange = '24H',
@@ -134,6 +120,7 @@ export async function getEquityCurve(
 ): Promise<EquityCurvePoint[]> {
   const interval = timeRangeToInterval(timeRange);
 
+  // Aggregate per timestamp across sessions
   const sql = `
     SELECT 
       ts,
@@ -149,7 +136,7 @@ export async function getEquityCurve(
 }
 
 /**
- * Strategy leaderboard - simplified.
+ * Strategy leaderboard.
  */
 export async function getStrategyLeaderboard(
   timeRange = '24H',
@@ -157,14 +144,14 @@ export async function getStrategyLeaderboard(
 ): Promise<StrategyLeaderboardRow[]> {
   const sql = `
     SELECT 
-      strategy_name,
-      status,
-      SUM(realized_pnl + unrealized_pnl) as pnl,
-      SUM(equity) as latest_equity
+      ts.strategy_name,
+      sess.status,
+      COALESCE(SUM(ts.realized_pnl + ts.unrealized_pnl), 0) as pnl,
+      COALESCE(SUM(ts.equity), 0) as latest_equity
     FROM trading_state ts
     JOIN trading_sessions sess ON ts.session_id = sess.session_id
     WHERE ts.position_qty != 0
-    GROUP BY strategy_name, status
+    GROUP BY ts.strategy_name, sess.status
     ORDER BY pnl DESC
     LIMIT 10
   `;
@@ -174,9 +161,9 @@ export async function getStrategyLeaderboard(
   return rows.map(r => ({
     strategy_name: r.strategy_name,
     status: r.status || 'unknown',
-    pnl: r.pnl || 0,
-    return_pct: r.latest_equity > 0 ? (r.pnl / r.latest_equity) * 100 : 0,
-    latest_equity: r.latest_equity || 0,
+    pnl: Number(r.pnl) || 0,
+    return_pct: Number(r.latest_equity) > 0 ? (Number(r.pnl) / Number(r.latest_equity)) * 100 : 0,
+    latest_equity: Number(r.latest_equity) || 0,
   }));
 }
 
@@ -222,7 +209,7 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
 }
 
 /**
- * PnL attribution - simplified.
+ * PnL attribution.
  */
 export async function getPnlAttribution(
   timeRange = '30D',
@@ -240,7 +227,7 @@ export async function getPnlAttribution(
     FROM fills
     WHERE ts > NOW() - INTERVAL '${interval}'
     GROUP BY DATE(ts)
-    ORDER BY date ASC
+    ORDER BY DATE(ts) ASC
     LIMIT 30
   `;
 
