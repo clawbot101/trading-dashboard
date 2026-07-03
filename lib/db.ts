@@ -38,12 +38,32 @@ export async function dbHealthcheck() {
 // Keep old query functions for backwards compatibility
 export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
   const result = await db.query(sql, params || []);
-  return result.rows as T[];
+  // Convert numeric strings to numbers
+  return result.rows.map(row => convertNumerics(row)) as T[];
 }
 
 export async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
   const rows = await query<T>(sql, params);
   return rows.length > 0 ? rows[0] : null;
+}
+
+// Helper to convert PostgreSQL numeric strings to JavaScript numbers
+function convertNumerics(obj: any): any {
+  if (!obj || typeof obj !== 'object') return obj;
+  
+  const result: any = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (typeof value === 'string' && /^\d+\.\d+$/.test(value)) {
+      // Numeric string like "123.456789"
+      result[key] = parseFloat(value);
+    } else if (typeof value === 'string' && /^-?\d+$/.test(value) && value.length > 10) {
+      // Large integer string (timestamp or big number)
+      result[key] = parseInt(value, 10);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 // Schema types (unchanged)
