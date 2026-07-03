@@ -1,20 +1,18 @@
 /**
- * Fills API route.
- * GET: returns paginated fills with filters and totals.
+ * Order Events API route.
+ * GET: returns order events grouped by strategy_order_id with lifecycle.
  */
 
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getFills, getFillTotals, getDistinctStrategies, getDistinctSymbols } from '../../../lib/queries/trades';
+import { getOrderEvents } from '../../../lib/queries/trades';
 
 // Query params schema
-const FillsParamsSchema = z.object({
+const OrdersParamsSchema = z.object({
   timeRange: z.enum(['24H', '7D', '30D', '90D', 'ALL']).default('24H'),
   venue: z.string().optional(),
   strategy: z.string().optional(),
   symbol: z.string().optional(),
-  side: z.enum(['buy', 'sell']).optional(),
-  isMaker: z.enum(['true', 'false']).transform(v => v === 'true').optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(500).default(50),
 });
@@ -22,36 +20,23 @@ const FillsParamsSchema = z.object({
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const params = FillsParamsSchema.parse({
+    const params = OrdersParamsSchema.parse({
       timeRange: searchParams.get('timeRange') || '24H',
       venue: searchParams.get('venue'),
       strategy: searchParams.get('strategy'),
       symbol: searchParams.get('symbol'),
-      side: searchParams.get('side'),
-      isMaker: searchParams.get('isMaker'),
       page: searchParams.get('page'),
       pageSize: searchParams.get('pageSize'),
     });
 
-    // Run queries sequentially
-    const fills = await getFills(
+    // Run query
+    const orderEvents = await getOrderEvents(
       params.timeRange,
       params.venue,
       params.strategy,
       params.symbol,
-      params.side,
-      params.isMaker,
       params.page,
       params.pageSize
-    );
-
-    const totals = await getFillTotals(
-      params.timeRange,
-      params.venue,
-      params.strategy,
-      params.symbol,
-      params.side,
-      params.isMaker
     );
 
     // Build response
@@ -61,8 +46,7 @@ export async function GET(request: Request) {
       page: params.page,
       pageSize: params.pageSize,
       data: {
-        fills,
-        totals,
+        orderEvents,
       },
     };
 
@@ -72,7 +56,7 @@ export async function GET(request: Request) {
       },
     });
   } catch (err) {
-    console.error('[api/fills] Error:', err);
+    console.error('[api/orders] Error:', err);
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
@@ -81,31 +65,6 @@ export async function GET(request: Request) {
       );
     }
 
-    return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
-      { status: 500 }
-    );
-  }
-}
-
-// Separate endpoint for filter options
-export async function OPTIONS() {
-  try {
-    const strategies = await getDistinctStrategies();
-    const symbols = await getDistinctSymbols();
-
-    return NextResponse.json({
-      ok: true,
-      data: {
-        strategies,
-        symbols,
-        venues: ['Hyperliquid', 'Lighter'],
-        sides: ['buy', 'sell'],
-        isMakerOptions: [true, false],
-      },
-    });
-  } catch (err) {
-    console.error('[api/fills OPTIONS] Error:', err);
     return NextResponse.json(
       { ok: false, error: 'Internal server error' },
       { status: 500 }

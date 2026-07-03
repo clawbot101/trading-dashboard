@@ -284,7 +284,8 @@ export async function getOrderEvents(
     grouped.get(key)!.push(event);
   }
 
-  for (const [strategy_order_id, events] of grouped.entries()) {
+  const entries = Array.from(grouped.entries());
+  for (const [strategy_order_id, events] of entries) {
     const first = events[0];
     const last = events[events.length - 1];
 
