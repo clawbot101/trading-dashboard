@@ -1,16 +1,18 @@
 /**
  * Live Positions API route.
- * GET: returns live positions, summary, and open orders.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { db } from '../../../lib/db';
+import {
+  getLivePositions,
+  getPositionSummary,
+  getAllOpenOrders,
+} from '../../../lib/queries/positions';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Query params schema with defaults
 const PositionsParamsSchema = z.object({
   venue: z.string().default("all"),
   strategy: z.string().default("all"),
@@ -21,8 +23,19 @@ export async function GET(req: NextRequest) {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
     const q = PositionsParamsSchema.parse(raw);
 
-    // TODO replace with real query
-    return NextResponse.json({ ok: true, query: q, data: {}, as_of_ts: new Date().toISOString() });
+    const venue = q.venue === 'all' ? undefined : q.venue;
+    const strategy = q.strategy === 'all' ? undefined : q.strategy;
+
+    const positions = await getLivePositions(venue, strategy);
+    const summary = await getPositionSummary(venue, strategy);
+    const openOrders = await getAllOpenOrders(venue, strategy);
+
+    return NextResponse.json({
+      ok: true,
+      query: q,
+      data: { positions, summary, openOrders },
+      as_of_ts: new Date().toISOString(),
+    });
   } catch (err: any) {
     console.error("[api/positions] error", {
       message: err?.message,

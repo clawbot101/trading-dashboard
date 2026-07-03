@@ -1,16 +1,21 @@
 /**
  * Overview API route.
- * GET: returns overview stats, equity curve, strategy leaderboard, venue split, PnL attribution, recent fills.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { db } from '../../../lib/db';
+import {
+  getOverviewStats,
+  getEquityCurve,
+  getStrategyLeaderboard,
+  getVenueSplit,
+  getPnlAttribution,
+  getRecentFills,
+} from '../../../lib/queries/overview';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Query params schema with defaults
 const OverviewParamsSchema = z.object({
   venue: z.string().default("all"),
   strategy: z.string().default("all"),
@@ -22,8 +27,30 @@ export async function GET(req: NextRequest) {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
     const q = OverviewParamsSchema.parse(raw);
 
-    // TODO replace with real query
-    return NextResponse.json({ ok: true, query: q, data: {}, as_of_ts: new Date().toISOString() });
+    const venue = q.venue === 'all' ? undefined : q.venue;
+    const strategy = q.strategy === 'all' ? undefined : q.strategy;
+    const timeRange = q.range.toUpperCase();
+
+    const stats = await getOverviewStats(timeRange, venue, strategy ? [strategy] : undefined);
+    const equityCurve = await getEquityCurve(timeRange, venue, strategy ? [strategy] : undefined);
+    const strategyLeaderboard = await getStrategyLeaderboard(timeRange, venue);
+    const venueSplit = await getVenueSplit();
+    const pnlAttribution = await getPnlAttribution(timeRange, venue, strategy ? [strategy] : undefined);
+    const recentFills = await getRecentFills(20);
+
+    return NextResponse.json({
+      ok: true,
+      query: q,
+      data: {
+        stats,
+        equityCurve,
+        strategyLeaderboard,
+        venueSplit,
+        pnlAttribution,
+        recentFills,
+      },
+      as_of_ts: new Date().toISOString(),
+    });
   } catch (err: any) {
     console.error("[api/overview] error", {
       message: err?.message,

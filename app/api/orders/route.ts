@@ -1,16 +1,14 @@
 /**
  * Order Events API route.
- * GET: returns order events grouped by strategy_order_id with lifecycle.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { db } from '../../../lib/db';
+import { getOrderEvents } from '../../../lib/queries/trades';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Query params schema with defaults
 const OrdersParamsSchema = z.object({
   venue: z.string().default("all"),
   strategy: z.string().default("all"),
@@ -25,8 +23,18 @@ export async function GET(req: NextRequest) {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
     const q = OrdersParamsSchema.parse(raw);
 
-    // TODO replace with real query
-    return NextResponse.json({ ok: true, query: q, data: {}, as_of_ts: new Date().toISOString() });
+    const venue = q.venue === 'all' ? undefined : q.venue;
+    const strategy = q.strategy === 'all' ? undefined : q.strategy;
+    const timeRange = q.range.toUpperCase();
+
+    const orderEvents = await getOrderEvents(timeRange, venue, strategy, q.symbol, q.page, q.pageSize);
+
+    return NextResponse.json({
+      ok: true,
+      query: q,
+      data: { orderEvents },
+      as_of_ts: new Date().toISOString(),
+    });
   } catch (err: any) {
     console.error("[api/orders] error", {
       message: err?.message,

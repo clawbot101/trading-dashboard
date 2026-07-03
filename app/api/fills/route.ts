@@ -1,16 +1,14 @@
 /**
  * Fills API route.
- * GET: returns paginated fills with filters and totals.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { db } from '../../../lib/db';
+import { getFills, getFillTotals, getDistinctStrategies, getDistinctSymbols } from '../../../lib/queries/trades';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Query params schema with defaults
 const FillsParamsSchema = z.object({
   venue: z.string().default("all"),
   strategy: z.string().default("all"),
@@ -27,8 +25,19 @@ export async function GET(req: NextRequest) {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
     const q = FillsParamsSchema.parse(raw);
 
-    // TODO replace with real query
-    return NextResponse.json({ ok: true, query: q, data: {}, as_of_ts: new Date().toISOString() });
+    const venue = q.venue === 'all' ? undefined : q.venue;
+    const strategy = q.strategy === 'all' ? undefined : q.strategy;
+    const timeRange = q.range.toUpperCase();
+
+    const fills = await getFills(timeRange, venue, strategy, q.symbol, q.side, q.isMaker, q.page, q.pageSize);
+    const totals = await getFillTotals(timeRange, venue, strategy, q.symbol, q.side, q.isMaker);
+
+    return NextResponse.json({
+      ok: true,
+      query: q,
+      data: { fills, totals },
+      as_of_ts: new Date().toISOString(),
+    });
   } catch (err: any) {
     console.error("[api/fills] error", {
       message: err?.message,
