@@ -3,32 +3,37 @@
  * GET: returns live positions, summary, and open orders.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { db } from '../../../lib/db';
 import {
   getLivePositions,
   getPositionSummary,
   getAllOpenOrders,
 } from '../../../lib/queries/positions';
 
-// Query params schema
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Query params schema with defaults
 const PositionsParamsSchema = z.object({
-  venue: z.string().optional(),
-  strategy: z.string().optional(),
+  venue: z.string().default("all"),
+  strategy: z.string().default("all"),
 });
 
-export async function GET(request: Request) {
+export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const params = PositionsParamsSchema.parse({
-      venue: searchParams.get('venue'),
-      strategy: searchParams.get('strategy'),
-    });
+    const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
+    const params = PositionsParamsSchema.parse(raw);
+
+    // Convert "all" to undefined for queries
+    const venue = params.venue === 'all' ? undefined : params.venue;
+    const strategy = params.strategy === 'all' ? undefined : params.strategy;
 
     // Run queries sequentially
-    const positions = await getLivePositions(params.venue, params.strategy);
-    const summary = await getPositionSummary(params.venue, params.strategy);
-    const openOrders = await getAllOpenOrders(params.venue, params.strategy);
+    const positions = await getLivePositions(venue, strategy);
+    const summary = await getPositionSummary(venue, strategy);
+    const openOrders = await getAllOpenOrders(venue, strategy);
 
     // Build response
     const response = {
@@ -41,13 +46,13 @@ export async function GET(request: Request) {
       },
     };
 
-    return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': 'no-store, max-age=0',
-      },
+    return NextResponse.json(response);
+  } catch (err: any) {
+    console.error("[api/positions] error", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
     });
-  } catch (err) {
-    console.error('[api/positions] Error:', err);
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
@@ -57,7 +62,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
+      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
       { status: 500 }
     );
   }

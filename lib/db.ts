@@ -1,33 +1,38 @@
-import { Client } from 'pg';
+import { Pool } from "pg";
 
-// Direct connection per request — works reliably in serverless/edge environments
-const DB_URL = process.env.TIMESCALEDB_TRADING_URL!;
-const TIMEOUT_MS = 8000; // hard timeout per spec
-const TARGET_MS = 3000; // target timeout
+declare global {
+  // eslint-disable-next-line no-var
+  var __pgPool: Pool | undefined;
+}
 
-export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
-  const client = new Client({
-    connectionString: DB_URL,
-    connectionTimeoutMillis: TIMEOUT_MS,
-    query_timeout: TIMEOUT_MS,
+function createPool() {
+  const connectionString = process.env.DATABASE_URL || process.env.TIMESCALEDB_TRADING_URL;
+  if (!connectionString) throw new Error("DATABASE_URL is not set");
+
+  return new Pool({
+    connectionString,
     ssl: { rejectUnauthorized: false },
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
   });
-  
-  const start = Date.now();
-  await client.connect();
-  try {
-    const result = await client.query(sql, params || []);
-    const elapsed = Date.now() - start;
-    if (elapsed > TARGET_MS) {
-      console.warn(`[db] Query took ${elapsed}ms > target ${TARGET_MS}ms: ${sql.slice(0, 100)}...`);
-    }
-    return result.rows as T[];
-  } catch (err) {
-    console.error('[db] Query error:', err);
-    throw err;
-  } finally {
-    await client.end();
-  }
+}
+
+export const db = global.__pgPool ?? createPool();
+
+if (process.env.NODE_ENV !== "production") {
+  global.__pgPool = db;
+}
+
+export async function dbHealthcheck() {
+  const res = await db.query("select now() as now, current_database() as db");
+  return res.rows[0];
+}
+
+// Keep old query functions for backwards compatibility
+export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
+  const result = await db.query(sql, params || []);
+  return result.rows as T[];
 }
 
 export async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | null> {
@@ -35,8 +40,7 @@ export async function queryOne<T>(sql: string, params?: unknown[]): Promise<T | 
   return rows.length > 0 ? rows[0] : null;
 }
 
-// ============== SCHEMA TYPES (from spec — do NOT modify) ==============
-
+// Schema types (unchanged)
 export interface TradingSession {
   session_id: string;
   strategy_name: string;
@@ -157,8 +161,6 @@ export interface StrategySignal {
   decision: string | null;
   regime: string | null;
 }
-
-// ============== ERROR HANDLING ==============
 
 export class DbError extends Error {
   constructor(message: string, public readonly sql?: string, public readonly params?: unknown[]) {

@@ -3,15 +3,19 @@
  * GET: returns paginated fills with filters and totals.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { db } from '../../../lib/db';
 import { getFills, getFillTotals, getDistinctStrategies, getDistinctSymbols } from '../../../lib/queries/trades';
 
-// Query params schema
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Query params schema with defaults
 const FillsParamsSchema = z.object({
-  timeRange: z.enum(['24H', '7D', '30D', '90D', 'ALL']).default('24H'),
-  venue: z.string().optional(),
-  strategy: z.string().optional(),
+  venue: z.string().default("all"),
+  strategy: z.string().default("all"),
+  range: z.enum(['24h', '7d', '30d', '90d', 'all']).default('24h'),
   symbol: z.string().optional(),
   side: z.enum(['buy', 'sell']).optional(),
   isMaker: z.enum(['true', 'false']).transform(v => v === 'true').optional(),
@@ -19,25 +23,23 @@ const FillsParamsSchema = z.object({
   pageSize: z.coerce.number().int().min(1).max(500).default(50),
 });
 
-export async function GET(request: Request) {
+export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const params = FillsParamsSchema.parse({
-      timeRange: searchParams.get('timeRange') || '24H',
-      venue: searchParams.get('venue'),
-      strategy: searchParams.get('strategy'),
-      symbol: searchParams.get('symbol'),
-      side: searchParams.get('side'),
-      isMaker: searchParams.get('isMaker'),
-      page: searchParams.get('page'),
-      pageSize: searchParams.get('pageSize'),
-    });
+    const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
+    const params = FillsParamsSchema.parse(raw);
+
+    // Convert "all" to undefined for queries
+    const venue = params.venue === 'all' ? undefined : params.venue;
+    const strategy = params.strategy === 'all' ? undefined : params.strategy;
+
+    // Map range to timeRange format
+    const timeRange = params.range.toUpperCase();
 
     // Run queries sequentially
     const fills = await getFills(
-      params.timeRange,
-      params.venue,
-      params.strategy,
+      timeRange,
+      venue,
+      strategy,
       params.symbol,
       params.side,
       params.isMaker,
@@ -46,9 +48,9 @@ export async function GET(request: Request) {
     );
 
     const totals = await getFillTotals(
-      params.timeRange,
-      params.venue,
-      params.strategy,
+      timeRange,
+      venue,
+      strategy,
       params.symbol,
       params.side,
       params.isMaker
@@ -66,13 +68,13 @@ export async function GET(request: Request) {
       },
     };
 
-    return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': 'no-store, max-age=0',
-      },
+    return NextResponse.json(response);
+  } catch (err: any) {
+    console.error("[api/fills] error", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
     });
-  } catch (err) {
-    console.error('[api/fills] Error:', err);
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
@@ -82,7 +84,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
+      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
       { status: 500 }
     );
   }
@@ -104,10 +106,14 @@ export async function OPTIONS() {
         isMakerOptions: [true, false],
       },
     });
-  } catch (err) {
-    console.error('[api/fills OPTIONS] Error:', err);
+  } catch (err: any) {
+    console.error("[api/fills OPTIONS] error", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
+    });
     return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
+      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
       { status: 500 }
     );
   }

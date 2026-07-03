@@ -3,8 +3,9 @@
  * GET: returns overview stats, equity curve, strategy leaderboard, venue split, PnL attribution, recent fills.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { db } from '../../../lib/db';
 import {
   getOverviewStats,
   getEquityCurve,
@@ -14,31 +15,37 @@ import {
   getRecentFills,
 } from '../../../lib/queries/overview';
 
-// Query params schema
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Query params schema with defaults
 const OverviewParamsSchema = z.object({
-  timeRange: z.enum(['24H', '7D', '30D', '90D', 'ALL']).default('24H'),
-  venue: z.string().optional(),
-  strategy: z.string().optional(),
+  venue: z.string().default("all"),
+  strategy: z.string().default("all"),
+  range: z.enum(['24h', '7d', '30d', '90d', 'all']).default('24h'),
 });
 
-export async function GET(request: Request) {
+export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const params = OverviewParamsSchema.parse({
-      timeRange: searchParams.get('timeRange') || '24H',
-      venue: searchParams.get('venue'),
-      strategy: searchParams.get('strategy'),
-    });
+    const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
+    const params = OverviewParamsSchema.parse(raw);
+
+    // Convert "all" to undefined for queries
+    const venue = params.venue === 'all' ? undefined : params.venue;
+    const strategy = params.strategy === 'all' ? undefined : params.strategy;
+
+    // Map range to timeRange format
+    const timeRange = params.range.toUpperCase();
 
     // Build strategy filter array
-    const strategies = params.strategy ? [params.strategy] : undefined;
+    const strategies = strategy ? [strategy] : undefined;
 
-    // Run queries (sequential to avoid connection pool exhaustion)
-    const stats = await getOverviewStats(params.timeRange, params.venue, strategies);
-    const equityCurve = await getEquityCurve(params.timeRange, params.venue, strategies);
-    const strategyLeaderboard = await getStrategyLeaderboard(params.timeRange, params.venue);
+    // Run queries sequentially
+    const stats = await getOverviewStats(timeRange, venue, strategies);
+    const equityCurve = await getEquityCurve(timeRange, venue, strategies);
+    const strategyLeaderboard = await getStrategyLeaderboard(timeRange, venue);
     const venueSplit = await getVenueSplit();
-    const pnlAttribution = await getPnlAttribution(params.timeRange, params.venue, strategies);
+    const pnlAttribution = await getPnlAttribution(timeRange, venue, strategies);
     const recentFills = await getRecentFills(20);
 
     // Build response
@@ -55,13 +62,13 @@ export async function GET(request: Request) {
       },
     };
 
-    return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': 'no-store, max-age=0',
-      },
+    return NextResponse.json(response);
+  } catch (err: any) {
+    console.error("[api/overview] error", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
     });
-  } catch (err) {
-    console.error('[api/overview] Error:', err);
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
@@ -71,7 +78,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
+      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
       { status: 500 }
     );
   }

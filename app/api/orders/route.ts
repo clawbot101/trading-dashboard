@@ -3,37 +3,41 @@
  * GET: returns order events grouped by strategy_order_id with lifecycle.
  */
 
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
+import { db } from '../../../lib/db';
 import { getOrderEvents } from '../../../lib/queries/trades';
 
-// Query params schema
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+// Query params schema with defaults
 const OrdersParamsSchema = z.object({
-  timeRange: z.enum(['24H', '7D', '30D', '90D', 'ALL']).default('24H'),
-  venue: z.string().optional(),
-  strategy: z.string().optional(),
+  venue: z.string().default("all"),
+  strategy: z.string().default("all"),
+  range: z.enum(['24h', '7d', '30d', '90d', 'all']).default('24h'),
   symbol: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(500).default(50),
 });
 
-export async function GET(request: Request) {
+export async function GET(req: NextRequest) {
   try {
-    const { searchParams } = new URL(request.url);
-    const params = OrdersParamsSchema.parse({
-      timeRange: searchParams.get('timeRange') || '24H',
-      venue: searchParams.get('venue'),
-      strategy: searchParams.get('strategy'),
-      symbol: searchParams.get('symbol'),
-      page: searchParams.get('page'),
-      pageSize: searchParams.get('pageSize'),
-    });
+    const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
+    const params = OrdersParamsSchema.parse(raw);
+
+    // Convert "all" to undefined for queries
+    const venue = params.venue === 'all' ? undefined : params.venue;
+    const strategy = params.strategy === 'all' ? undefined : params.strategy;
+
+    // Map range to timeRange format
+    const timeRange = params.range.toUpperCase();
 
     // Run query
     const orderEvents = await getOrderEvents(
-      params.timeRange,
-      params.venue,
-      params.strategy,
+      timeRange,
+      venue,
+      strategy,
       params.symbol,
       params.page,
       params.pageSize
@@ -50,13 +54,13 @@ export async function GET(request: Request) {
       },
     };
 
-    return NextResponse.json(response, {
-      headers: {
-        'Cache-Control': 'no-store, max-age=0',
-      },
+    return NextResponse.json(response);
+  } catch (err: any) {
+    console.error("[api/orders] error", {
+      message: err?.message,
+      code: err?.code,
+      stack: err?.stack,
     });
-  } catch (err) {
-    console.error('[api/orders] Error:', err);
 
     if (err instanceof z.ZodError) {
       return NextResponse.json(
@@ -66,7 +70,7 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
+      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
       { status: 500 }
     );
   }
