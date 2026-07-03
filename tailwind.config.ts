@@ -34,9 +34,9 @@ const config: Config = {
         'sans': ['Inter', 'system-ui', 'sans-serif'],
       },
       fontSize: {
-        'xs-mono': ['11px', { fontFamily: 'IBM Plex Mono, monospace' }],
-        'sm-mono': ['12px', { fontFamily: 'IBM Plex Mono, monospace' }],
-        'base-mono': ['14px', { fontFamily: 'IBM Plex Mono, monospace' }],
+        'xs-mono': '11px',
+        'sm-mono': '12px',
+        'base-mono': '14px',
       },
       borderColor: {
         'hl': '#1e3038',
