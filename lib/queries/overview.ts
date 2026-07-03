@@ -1,6 +1,6 @@
 /**
  * SQL queries for the Overview page.
- * Simplified - working SQL only.
+ * Fixed for actual production schema.
  */
 
 import { query, queryOne, db } from '../db';
@@ -44,7 +44,7 @@ export interface RecentFill {
   side: string;
   fill_qty: number;
   fill_price: number;
-  realized_pnl: number | null;
+  fee: number | null;
 }
 
 export function timeRangeToInterval(range: string): string {
@@ -111,7 +111,7 @@ export async function getOverviewStats(
 }
 
 /**
- * Get equity curve - just return raw snapshots.
+ * Get equity curve.
  */
 export async function getEquityCurve(
   timeRange = '24H',
@@ -120,7 +120,6 @@ export async function getEquityCurve(
 ): Promise<EquityCurvePoint[]> {
   const interval = timeRangeToInterval(timeRange);
 
-  // Aggregate per timestamp across sessions
   const sql = `
     SELECT 
       ts,
@@ -145,13 +144,12 @@ export async function getStrategyLeaderboard(
   const sql = `
     SELECT 
       ts.strategy_name,
-      sess.status,
+      'running' as status,
       COALESCE(SUM(ts.realized_pnl + ts.unrealized_pnl), 0) as pnl,
       COALESCE(SUM(ts.equity), 0) as latest_equity
     FROM trading_state ts
-    JOIN trading_sessions sess ON ts.session_id = sess.session_id
     WHERE ts.position_qty != 0
-    GROUP BY ts.strategy_name, sess.status
+    GROUP BY ts.strategy_name
     ORDER BY pnl DESC
     LIMIT 10
   `;
@@ -186,7 +184,7 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
 }
 
 /**
- * Recent fills.
+ * Recent fills - without realized_pnl (column doesn't exist in prod).
  */
 export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
   const sql = `
@@ -198,7 +196,7 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
       f.side,
       f.fill_qty,
       f.fill_price,
-      f.realized_pnl
+      f.fee
     FROM fills f
     JOIN trading_sessions sess ON f.session_id = sess.session_id
     ORDER BY f.ts DESC
@@ -209,7 +207,7 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
 }
 
 /**
- * PnL attribution.
+ * PnL attribution - using equity_snapshots instead of fills.
  */
 export async function getPnlAttribution(
   timeRange = '30D',
@@ -224,7 +222,7 @@ export async function getPnlAttribution(
       SUM(realized_pnl) as price_pnl,
       0 as fees,
       0 as funding
-    FROM fills
+    FROM equity_snapshots
     WHERE ts > NOW() - INTERVAL '${interval}'
     GROUP BY DATE(ts)
     ORDER BY DATE(ts) ASC

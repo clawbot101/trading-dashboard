@@ -1,5 +1,6 @@
 /**
  * SQL queries for the Live Positions page.
+ * Fixed for actual production schema.
  */
 
 import { query, queryOne, db } from '../db';
@@ -18,8 +19,6 @@ export interface LivePosition {
   realized_pnl: number;
   leverage: number | null;
   equity: number | null;
-  margin: number | null;
-  funding_accrued: number | null;
   notional: number;
   side: string;
 }
@@ -54,8 +53,6 @@ export async function getLivePositions(
       realized_pnl,
       leverage,
       equity,
-      margin,
-      funding_accrued,
       ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)) as notional,
       CASE 
         WHEN position_qty > 0 THEN 'LONG'

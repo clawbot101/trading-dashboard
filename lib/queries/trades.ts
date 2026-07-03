@@ -1,5 +1,6 @@
 /**
  * SQL queries for the Trades & Orders page.
+ * Fixed for actual production schema.
  */
 
 import { query, queryOne, db } from '../db';
@@ -14,8 +15,6 @@ export interface FillRow {
   fill_price: number;
   fill_qty: number;
   fee: number | null;
-  realized_pnl: number | null;
-  is_maker: boolean | null;
   strategy_name: string;
   notional: number;
 }
@@ -24,7 +23,6 @@ export interface FillTotals {
   total_qty: number;
   total_notional: number;
   total_fee: number;
-  total_realized_pnl: number;
 }
 
 export interface OrderEventGroup {
@@ -50,7 +48,7 @@ export function timeRangeToInterval(range: string): string {
 }
 
 /**
- * Get paginated fills.
+ * Get paginated fills - no realized_pnl in prod.
  */
 export async function getFills(
   timeRange = '24H',
@@ -76,8 +74,6 @@ export async function getFills(
       f.fill_price,
       f.fill_qty,
       f.fee,
-      f.realized_pnl,
-      f.is_maker,
       sess.strategy_name,
       ABS(f.fill_qty * f.fill_price) as notional
     FROM fills f
@@ -91,7 +87,7 @@ export async function getFills(
 }
 
 /**
- * Get fill totals.
+ * Get fill totals - no realized_pnl.
  */
 export async function getFillTotals(
   timeRange = '24H',
@@ -107,8 +103,7 @@ export async function getFillTotals(
     SELECT
       SUM(fill_qty) as total_qty,
       SUM(ABS(fill_qty * fill_price)) as total_notional,
-      SUM(ABS(COALESCE(fee, 0))) as total_fee,
-      SUM(COALESCE(realized_pnl, 0)) as total_realized_pnl
+      SUM(ABS(COALESCE(fee, 0))) as total_fee
     FROM fills
     WHERE ts > NOW() - INTERVAL '${interval}'
   `;
