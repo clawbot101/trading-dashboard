@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { useState } from 'react';
 import EquityChart from '../components/EquityChart';
+import PnlAttributionChart from '../components/PnlAttributionChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -163,12 +164,7 @@ export default function OverviewPage() {
         <div className="panel p-4">
           <div className="text-xs text-hl-secondary mb-2">PnL Attribution (Daily)</div>
           {pnlAttribution.length > 0 ? (
-            <div className="h-48 bg-hl-hover rounded flex items-center justify-center">
-              {/* Placeholder for Recharts stacked bar */}
-              <div className="text-hl-muted text-sm">
-                [Recharts stacked bar: {pnlAttribution.length} days]
-              </div>
-            </div>
+            <PnlAttributionChart data={pnlAttribution} />
           ) : (
             <div className="h-48 bg-hl-hover rounded flex items-center justify-center text-hl-muted">
               No attribution data
