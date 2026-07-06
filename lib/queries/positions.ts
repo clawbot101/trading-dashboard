@@ -33,7 +33,6 @@ export interface PositionSummary {
 
 /**
  * Get all live positions.
- * uPnL calculated fresh from mark_price - avg_entry_price (snapshot updates ~1min).
  */
 export async function getLivePositions(
   venue?: string,
@@ -50,8 +49,7 @@ export async function getLivePositions(
       position_qty,
       avg_entry_price,
       mark_price,
-      -- Calculate uPnL fresh from latest mark_price (not stored column)
-      position_qty * (COALESCE(mark_price, avg_entry_price, 0) - COALESCE(avg_entry_price, 0)) as unrealized_pnl,
+      unrealized_pnl,
       realized_pnl,
       leverage,
       equity,
@@ -63,7 +61,7 @@ export async function getLivePositions(
       END as side
     FROM trading_state
     WHERE position_qty != 0
-    ORDER BY ABS(position_qty * (COALESCE(mark_price, avg_entry_price, 0) - COALESCE(avg_entry_price, 0))) DESC
+    ORDER BY ABS(unrealized_pnl) DESC
   `;
 
   return query<LivePosition>(sql);
@@ -71,7 +69,6 @@ export async function getLivePositions(
 
 /**
  * Get position summary.
- * uPnL calculated fresh from mark_price.
  */
 export async function getPositionSummary(
   venue?: string,
@@ -83,8 +80,7 @@ export async function getPositionSummary(
       SUM(CASE WHEN position_qty < 0 THEN ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)) ELSE 0 END) as total_notional_short,
       SUM(position_qty * COALESCE(mark_price, avg_entry_price, 0)) as net_exposure,
       AVG(CASE WHEN position_qty != 0 AND leverage IS NOT NULL THEN ABS(leverage) ELSE NULL END) as gross_leverage,
-      -- Total uPnL calculated fresh from mark_price
-      SUM(position_qty * (COALESCE(mark_price, avg_entry_price, 0) - COALESCE(avg_entry_price, 0))) as total_unrealized_pnl
+      SUM(unrealized_pnl) as total_unrealized_pnl
     FROM trading_state
     WHERE position_qty != 0
   `;
