@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { createChart, ColorType, IChartApi, ISeriesApi, AreaSeriesPartialOptions } from 'lightweight-charts';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { createChart, ColorType } = require('lightweight-charts');
 
 interface EquityCurvePoint {
   ts: string;
@@ -15,8 +16,8 @@ interface EquityChartProps {
 
 export default function EquityChart({ data, height = 260 }: EquityChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
-  const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<'Area'> | null>(null);
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -41,20 +42,17 @@ export default function EquityChart({ data, height = 260 }: EquityChartProps) {
         timeVisible: true,
         secondsVisible: false,
       },
-      crosshair: {
-        mode: 1,
-      },
     });
 
     chartRef.current = chart;
 
     // Create area series
     const areaSeries = chart.addAreaSeries({
-      topColor: 'rgba(34, 197, 94, 0.4)',  // green
+      topColor: 'rgba(34, 197, 94, 0.4)',
       bottomColor: 'rgba(34, 197, 94, 0.0)',
       lineColor: '#22c55e',
       lineWidth: 2,
-    } as AreaSeriesPartialOptions);
+    });
 
     seriesRef.current = areaSeries;
 
@@ -81,15 +79,13 @@ export default function EquityChart({ data, height = 260 }: EquityChartProps) {
   useEffect(() => {
     if (!seriesRef.current || !data.length) return;
 
-    // Convert to lightweight-charts format: { time: unix timestamp, value: equity }
     const chartData = data.map((point) => ({
-      time: Math.floor(new Date(point.ts).getTime() / 1000) as number,
+      time: Math.floor(new Date(point.ts).getTime() / 1000),
       value: point.equity,
     }));
 
     seriesRef.current.setData(chartData);
 
-    // Fit content
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
     }
