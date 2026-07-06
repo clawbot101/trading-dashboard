@@ -3,6 +3,7 @@
 import useSWR from 'swr';
 import Link from 'next/link';
 import { useState } from 'react';
+import EquityChart from '../components/EquityChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -105,18 +106,7 @@ export default function OverviewPage() {
         {/* Equity chart (2/3) */}
         <div className="col-span-2 panel p-4">
           <div className="text-xs text-hl-secondary mb-2">Account Equity</div>
-          {equityCurve.length > 0 ? (
-            <div className="h-64 bg-hl-hover rounded flex items-center justify-center">
-              {/* Placeholder for TradingView chart */}
-              <div className="text-hl-muted text-sm">
-                [TradingView chart: {equityCurve.length} points]
-              </div>
-            </div>
-          ) : (
-            <div className="h-64 bg-hl-hover rounded flex items-center justify-center text-hl-muted">
-              No equity data
-            </div>
-          )}
+          <EquityChart data={equityCurve} height={256} />
           <div className="text-xs text-hl-muted mt-2">as of {formatTime(asOf)}</div>
         </div>
 
