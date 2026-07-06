@@ -3,6 +3,7 @@
 import useSWR from 'swr';
 import Link from 'next/link';
 import { useState } from 'react';
+import PositionPriceChart from '../../components/PositionPriceChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -196,10 +197,13 @@ function PositionRow({
         <tr>
           <td colSpan={13} className="bg-hl-hover p-4">
             <div className="grid grid-cols-3 gap-4">
-              {/* Mini chart placeholder */}
-              <div className="h-32 bg-hl-panel rounded flex items-center justify-center text-hl-muted text-sm">
-                [Price chart with entry line]
-              </div>
+              {/* Mini price chart */}
+              <PositionPriceChart
+                symbol={position.symbol}
+                entryPrice={position.avg_entry_price}
+                side={position.side}
+                height={128}
+              />
 
               {/* Recent fills */}
               <div>
