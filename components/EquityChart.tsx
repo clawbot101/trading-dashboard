@@ -1,8 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { createChart, ColorType } = require('lightweight-charts');
+import dynamic from 'next/dynamic';
 
 interface EquityCurvePoint {
   ts: string;
@@ -14,7 +13,8 @@ interface EquityChartProps {
   height?: number;
 }
 
-export default function EquityChart({ data, height = 260 }: EquityChartProps) {
+// Chart component that uses lightweight-charts
+function ChartInner({ data, height = 260 }: EquityChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
@@ -22,41 +22,49 @@ export default function EquityChart({ data, height = 260 }: EquityChartProps) {
   useEffect(() => {
     if (!chartContainerRef.current) return;
 
-    // Create chart
-    const chart = createChart(chartContainerRef.current, {
-      width: chartContainerRef.current.clientWidth,
-      height: height,
-      layout: {
-        background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#a0a0a0',
-      },
-      grid: {
-        vertLines: { color: 'rgba(60, 60, 60, 0.3)' },
-        horzLines: { color: 'rgba(60, 60, 60, 0.3)' },
-      },
-      rightPriceScale: {
-        borderColor: 'rgba(60, 60, 60, 0.5)',
-      },
-      timeScale: {
-        borderColor: 'rgba(60, 60, 60, 0.5)',
-        timeVisible: true,
-        secondsVisible: false,
-      },
+    // Dynamic import for lightweight-charts
+    import('lightweight-charts').then(({ createChart, ColorType }) => {
+      const chart = createChart(chartContainerRef.current!, {
+        width: chartContainerRef.current!.clientWidth,
+        height: height,
+        layout: {
+          background: { type: ColorType.Solid, color: 'transparent' },
+          textColor: '#a0a0a0',
+        },
+        grid: {
+          vertLines: { color: 'rgba(60, 60, 60, 0.3)' },
+          horzLines: { color: 'rgba(60, 60, 60, 0.3)' },
+        },
+        rightPriceScale: {
+          borderColor: 'rgba(60, 60, 60, 0.5)',
+        },
+        timeScale: {
+          borderColor: 'rgba(60, 60, 60, 0.5)',
+          timeVisible: true,
+          secondsVisible: false,
+        },
+      });
+
+      chartRef.current = chart;
+
+      const areaSeries = chart.addAreaSeries({
+        topColor: 'rgba(34, 197, 94, 0.4)',
+        bottomColor: 'rgba(34, 197, 94, 0.0)',
+        lineColor: '#22c55e',
+        lineWidth: 2,
+      });
+
+      seriesRef.current = areaSeries;
+
+      // Set initial data
+      const chartData = data.map((point) => ({
+        time: Math.floor(new Date(point.ts).getTime() / 1000),
+        value: point.equity,
+      }));
+      areaSeries.setData(chartData);
+      chart.timeScale().fitContent();
     });
 
-    chartRef.current = chart;
-
-    // Create area series
-    const areaSeries = chart.addAreaSeries({
-      topColor: 'rgba(34, 197, 94, 0.4)',
-      bottomColor: 'rgba(34, 197, 94, 0.0)',
-      lineColor: '#22c55e',
-      lineWidth: 2,
-    });
-
-    seriesRef.current = areaSeries;
-
-    // Handle resize
     const handleResize = () => {
       if (chartContainerRef.current && chartRef.current) {
         chartRef.current.applyOptions({
@@ -69,9 +77,11 @@ export default function EquityChart({ data, height = 260 }: EquityChartProps) {
 
     return () => {
       window.removeEventListener('resize', handleResize);
-      chart.remove();
-      chartRef.current = null;
-      seriesRef.current = null;
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+        seriesRef.current = null;
+      }
     };
   }, [height]);
 
@@ -91,6 +101,10 @@ export default function EquityChart({ data, height = 260 }: EquityChartProps) {
     }
   }, [data]);
 
+  return <div ref={chartContainerRef} className="rounded" />;
+}
+
+export default function EquityChart({ data, height = 260 }: EquityChartProps) {
   if (data.length < 2) {
     return (
       <div className="h-64 bg-hl-hover rounded flex items-center justify-center text-hl-muted text-sm">
@@ -99,5 +113,5 @@ export default function EquityChart({ data, height = 260 }: EquityChartProps) {
     );
   }
 
-  return <div ref={chartContainerRef} className="rounded" />;
+  return <ChartInner data={data} height={height} />;
 }
