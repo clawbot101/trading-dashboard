@@ -30,6 +30,8 @@ export interface LivePosition {
   cumulative_close_fee: number | null;
   last_trade_fee: number | null;
   last_trade_ts: string | null;
+  total_fee: number;
+  adjusted_pnl: number;
 }
 
 export interface PositionSummary {
@@ -38,8 +40,10 @@ export interface PositionSummary {
   net_exposure: number;
   gross_leverage: number;
   total_unrealized_pnl: number;
+  total_adjusted_pnl: number;
   total_funding: number | null;
   total_margin: number | null;
+  total_fees: number | null;
 }
 
 /**
@@ -78,7 +82,9 @@ export async function getLivePositions(
       cumulative_open_fee,
       cumulative_close_fee,
       last_trade_fee,
-      last_trade_ts
+      last_trade_ts,
+      COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) as total_fee,
+      unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0) as adjusted_pnl
     FROM trading_state
     WHERE position_qty != 0
     ORDER BY ABS(unrealized_pnl) DESC
@@ -101,8 +107,10 @@ export async function getPositionSummary(
       SUM(position_qty * COALESCE(mark_price, avg_entry_price, 0)) as net_exposure,
       AVG(CASE WHEN position_qty != 0 AND leverage IS NOT NULL THEN ABS(leverage) ELSE NULL END) as gross_leverage,
       SUM(unrealized_pnl) as total_unrealized_pnl,
+      SUM(unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0)) as total_adjusted_pnl,
       SUM(funding_accrued) as total_funding,
-      SUM(margin) as total_margin
+      SUM(margin) as total_margin,
+      SUM(COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) as total_fees
     FROM trading_state
     WHERE position_qty != 0
   `;
