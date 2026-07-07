@@ -84,7 +84,7 @@ export async function getFills(
       sess.strategy_name,
       ABS(f.fill_qty * f.fill_price) as notional
     FROM fills f
-    JOIN trading_sessions sess ON f.session_id = sess.session_id
+    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
     WHERE f.ts > NOW() - INTERVAL '${interval}'
     ORDER BY f.ts DESC
     LIMIT $1 OFFSET $2

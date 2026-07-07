@@ -131,14 +131,14 @@ export default function TradesPage() {
             <tbody>
               {fills.length > 0 ? (
                 fills.map((f: any) => (
-                  <tr key={f.fill_id}>
+                  <tr key={f.fill_id || `${f.ts}-${f.symbol}`}>
                     <td className="text-xs text-hl-muted">{formatTime(f.ts)}</td>
-                    <td className="text-sm">{f.strategy_name}</td>
+                    <td className="text-sm">{f.strategy_name || '--'}</td>
                     <td className={`venue-${f.venue === 'Hyperliquid' ? 'hl' : 'lt'}`}>
                       {f.venue === 'Hyperliquid' ? 'HL' : 'LT'}
                     </td>
                     <td className="font-medium">{f.symbol}</td>
-                    <td className={`badge-${f.side.toLowerCase()}`}>{f.side}</td>
+                    <td className={`badge-${(f.side || '').toLowerCase()}`}>{f.side || '--'}</td>
                     <td className="font-num text-right">{formatPrice(f.fill_price)}</td>
                     <td className="font-num text-right">{formatQty(f.fill_qty)}</td>
                     <td className="font-num text-right">{formatUsd(f.notional)}</td>

@@ -192,7 +192,7 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
 }
 
 /**
- * Recent fills - without realized_pnl (column doesn't exist in prod).
+ * Recent fills.
  */
 export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
   const sql = `
@@ -206,7 +206,7 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
       f.fill_price,
       f.fee
     FROM fills f
-    JOIN trading_sessions sess ON f.session_id = sess.session_id
+    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
     ORDER BY f.ts DESC
     LIMIT $1
   `;
