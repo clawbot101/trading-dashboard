@@ -215,7 +215,7 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
 }
 
 /**
- * PnL attribution - using equity_snapshots instead of fills.
+ * PnL attribution - daily breakdown of price change, fees, and funding.
  */
 export async function getPnlAttribution(
   timeRange = '30D',
@@ -224,18 +224,56 @@ export async function getPnlAttribution(
 ): Promise<any[]> {
   const interval = timeRangeToInterval(timeRange);
 
-  const sql = `
+  // Get daily equity changes (price PnL)
+  const equityByDay = await query<any>(`
     SELECT 
       DATE(ts) as date,
-      SUM(realized_pnl) as price_pnl,
-      0 as fees,
-      0 as funding
+      SUM(equity) as daily_equity
     FROM equity_snapshots
     WHERE ts > NOW() - INTERVAL '${interval}'
     GROUP BY DATE(ts)
     ORDER BY DATE(ts) ASC
     LIMIT 30
-  `;
+  `);
 
-  return query<any>(sql);
+  // Get daily fees from fills
+  const feesByDay = await query<any>(`
+    SELECT 
+      DATE(ts) as date,
+      SUM(ABS(COALESCE(fee, 0))) as daily_fees
+    FROM fills
+    WHERE ts > NOW() - INTERVAL '${interval}'
+    GROUP BY DATE(ts)
+  `);
+
+  // Get daily funding from funding_payments
+  const fundingByDay = await query<any>(`
+    SELECT 
+      DATE(ts) as date,
+      SUM(COALESCE(payment_amount, 0)) as daily_funding
+    FROM funding_payments
+    WHERE ts > NOW() - INTERVAL '${interval}'
+    GROUP BY DATE(ts)
+  `);
+
+  // Merge all data
+  const feesMap = new Map(feesByDay.map(f => [f.date, f.daily_fees]));
+  const fundingMap = new Map(fundingByDay.map(f => [f.date, f.daily_funding]));
+
+  // Compute daily price PnL (change in equity from previous day)
+  const result = equityByDay.map((row, i) => {
+    const prevEquity = i > 0 ? equityByDay[i - 1]?.daily_equity || row.daily_equity : row.daily_equity;
+    const pricePnl = row.daily_equity - prevEquity;
+    const fees = feesMap.get(row.date) || 0;
+    const funding = fundingMap.get(row.date) || 0;
+
+    return {
+      date: row.date,
+      price_pnl: pricePnl,
+      fees: -fees, // fees are negative (cost)
+      funding: funding,
+    };
+  });
+
+  return result;
 }
