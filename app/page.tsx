@@ -2,8 +2,9 @@
 
 import useSWR from 'swr';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import EquityChart from '../components/EquityChart';
+import PnlChart from '../components/PnlChart';
 import PnlAttributionChart from '../components/PnlAttributionChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -14,9 +15,10 @@ const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
 export default function OverviewPage() {
   const [timeRange, setTimeRange] = useState('24H');
   const [paused, setPaused] = useState(false);
+  const [chartView, setChartView] = useState<'equity' | 'pnl'>('equity');
 
   const { data, error, isLoading } = useSWR(
-    `/api/overview?timeRange=${timeRange}`,
+    `/api/overview?range=${timeRange.toLowerCase()}`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 60000, // 60s for analytics
@@ -30,7 +32,29 @@ export default function OverviewPage() {
   const venueSplit = data?.data?.venueSplit || [];
   const pnlAttribution = data?.data?.pnlAttribution || [];
   const recentFills = data?.data?.recentFills || [];
-  const asOf = data?.as_of;
+  const asOf = data?.as_of_ts;
+
+  // Compute PnL curve from equity curve
+  const pnlCurve = useMemo(() => {
+    if (!equityCurve.length) return [];
+    const firstEquity = equityCurve[0]?.equity || 0;
+    return equityCurve.map((p: any) => ({
+      ts: p.ts,
+      pnl: (p.equity || 0) - firstEquity,
+    }));
+  }, [equityCurve]);
+
+  // Data freshness indicator
+  const dataFreshness = useMemo(() => {
+    if (!asOf) return { text: 'Connecting...', seconds: null };
+    const diff = Date.now() - new Date(asOf).getTime();
+    const seconds = Math.floor(diff / 1000);
+    const mins = Math.floor(seconds / 60);
+    const hours = Math.floor(mins / 60);
+    if (hours > 0) return { text: `${hours}h ago`, seconds };
+    if (mins > 0) return { text: `${mins}m ago`, seconds };
+    return { text: 'Just now', seconds };
+  }, [asOf]);
 
   return (
     <div className="px-4 py-6 max-w-7xl mx-auto">
@@ -97,18 +121,47 @@ export default function OverviewPage() {
           <StatCard
             label="Open Positions"
             value={`${stats.open_positions}`}
-            delta={formatUsd(stats.gross_exposure)}
+            subValue={formatUsd(stats.gross_exposure)}
           />
         </div>
       )}
 
       {/* Main content: equity chart + right column */}
       <div className="grid grid-cols-3 gap-4 mb-6">
-        {/* Equity chart (2/3) */}
+        {/* Equity/PnL chart (2/3) */}
         <div className="col-span-2 panel p-4">
-          <div className="text-xs text-hl-secondary mb-2">Account Equity</div>
-          <EquityChart data={equityCurve} height={256} />
-          <div className="text-xs text-hl-muted mt-2">as of {formatTime(asOf)}</div>
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setChartView('equity')}
+                className={`px-2 py-0.5 text-xs rounded ${
+                  chartView === 'equity'
+                    ? 'bg-hl-accent text-hl-bg'
+                    : 'bg-hl-hover text-hl-secondary'
+                }`}
+              >
+                Equity
+              </button>
+              <button
+                onClick={() => setChartView('pnl')}
+                className={`px-2 py-0.5 text-xs rounded ${
+                  chartView === 'pnl'
+                    ? 'bg-hl-accent text-hl-bg'
+                    : 'bg-hl-hover text-hl-secondary'
+                }`}
+              >
+                PnL
+              </button>
+            </div>
+            <div className="text-xs text-hl-muted">
+              Updated {dataFreshness.text}
+            </div>
+          </div>
+          {chartView === 'equity' ? (
+            <EquityChart data={equityCurve} height={256} />
+          ) : (
+            <PnlChart data={pnlCurve} height={256} />
+          )}
         </div>
 
         {/* Right column (1/3) */}
@@ -213,12 +266,14 @@ function StatCard({
   label,
   value,
   delta,
+  subValue,
   pnl,
   negative,
 }: {
   label: string;
   value: string;
   delta?: string;
+  subValue?: string;
   pnl?: boolean;
   negative?: boolean;
 }) {
@@ -236,7 +291,8 @@ function StatCard({
     <div className="stat-card">
       <div className="label">{label}</div>
       <div className={`value ${valueClass}`}>{value}</div>
-      {delta && <div className="delta text-hl-muted">{delta}</div>}
+      {subValue && <div className="value text-hl-secondary text-sm">{subValue}</div>}
+      {delta && !subValue && <div className="delta text-hl-muted">{delta}</div>}
     </div>
   );
 }

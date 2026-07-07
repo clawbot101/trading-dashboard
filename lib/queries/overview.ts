@@ -59,17 +59,30 @@ export function timeRangeToInterval(range: string): string {
 }
 
 /**
- * Get overview stats from trading_state.
+ * Get overview stats from trading_state and equity_snapshots.
  */
 export async function getOverviewStats(
   timeRange = '24H',
   venue?: string,
   strategies?: string[]
 ): Promise<OverviewStats | null> {
-  // Stats from trading_state
-  const row = await queryOne<any>(`
+  const interval = timeRangeToInterval(timeRange);
+
+  // Get latest equity from equity_snapshots (most reliable source)
+  const latestRow = await queryOne<any>(`
+    SELECT SUM(equity) as equity FROM equity_snapshots
+    WHERE ts = (SELECT MAX(ts) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}')
+  `);
+
+  // Earliest equity in range for PnL calculation
+  const earliestRow = await queryOne<any>(`
+    SELECT SUM(equity) as equity FROM equity_snapshots
+    WHERE ts = (SELECT MIN(ts) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}')
+  `);
+
+  // Stats from trading_state for positions
+  const stateRow = await queryOne<any>(`
     SELECT
-      COALESCE(SUM(equity), 0) as total_equity,
       COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
       COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
       COUNT(CASE WHEN position_qty != 0 THEN 1 END) as open_positions,
@@ -78,34 +91,20 @@ export async function getOverviewStats(
     WHERE position_qty != 0
   `);
 
-  const interval = timeRangeToInterval(timeRange);
-
-  // Latest equity from snapshots
-  const latestRow = await queryOne<any>(`
-    SELECT SUM(equity) as equity FROM equity_snapshots
-    WHERE ts = (SELECT MAX(ts) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}')
-  `);
-
-  // Earliest equity in range
-  const earliestRow = await queryOne<any>(`
-    SELECT SUM(equity) as equity FROM equity_snapshots
-    WHERE ts = (SELECT MIN(ts) FROM equity_snapshots WHERE ts > NOW() - INTERVAL '${interval}')
-  `);
-
-  const equityNow = latestRow?.equity || row?.total_equity || 0;
-  const equityAgo = earliestRow?.equity || row?.total_equity || 0;
+  const equityNow = latestRow?.equity || 0;
+  const equityAgo = earliestRow?.equity || equityNow;
   const pnl24h = equityNow - equityAgo;
   const pnl24hPct = equityAgo > 0 ? (pnl24h / equityAgo) * 100 : 0;
 
   return {
-    total_equity: row?.total_equity || 0,
+    total_equity: equityNow,
     pnl_24h: pnl24h,
     pnl_24h_pct: pnl24hPct,
-    total_unrealized_pnl: row?.total_unrealized_pnl || 0,
-    total_realized_pnl: row?.total_realized_pnl || 0,
+    total_unrealized_pnl: stateRow?.total_unrealized_pnl || 0,
+    total_realized_pnl: stateRow?.total_realized_pnl || 0,
     max_drawdown_pct: 0,
-    open_positions: row?.open_positions || 0,
-    gross_exposure: row?.gross_exposure || 0,
+    open_positions: stateRow?.open_positions || 0,
+    gross_exposure: stateRow?.gross_exposure || 0,
     equity_24h_ago: equityAgo,
   };
 }
