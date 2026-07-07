@@ -24,7 +24,7 @@ export default function TradesPage() {
   );
 
   const { data: ordersData } = useSWR(
-    `/api/orders?timeRange=${timeRange}&page=${page}&pageSize=50`,
+    `/api/orders?range=${timeRange.toLowerCase()}&page=${page}&pageSize=50`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 5000,

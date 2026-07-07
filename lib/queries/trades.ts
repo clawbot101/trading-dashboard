@@ -17,12 +17,15 @@ export interface FillRow {
   fee: number | null;
   strategy_name: string;
   notional: number;
+  is_maker: boolean | null;
+  realized_pnl: number | null;
 }
 
 export interface FillTotals {
   total_qty: number;
   total_notional: number;
   total_fee: number;
+  total_realized_pnl: number;
 }
 
 export interface OrderEventGroup {
@@ -48,7 +51,7 @@ export function timeRangeToInterval(range: string): string {
 }
 
 /**
- * Get paginated fills - no realized_pnl in prod.
+ * Get paginated fills.
  */
 export async function getFills(
   timeRange = '24H',
@@ -74,6 +77,8 @@ export async function getFills(
       f.fill_price,
       f.fill_qty,
       f.fee,
+      f.is_maker,
+      f.realized_pnl,
       sess.strategy_name,
       ABS(f.fill_qty * f.fill_price) as notional
     FROM fills f
@@ -87,7 +92,7 @@ export async function getFills(
 }
 
 /**
- * Get fill totals - no realized_pnl.
+ * Get fill totals.
  */
 export async function getFillTotals(
   timeRange = '24H',
@@ -103,7 +108,8 @@ export async function getFillTotals(
     SELECT
       SUM(fill_qty) as total_qty,
       SUM(ABS(fill_qty * fill_price)) as total_notional,
-      SUM(ABS(COALESCE(fee, 0))) as total_fee
+      SUM(ABS(COALESCE(fee, 0))) as total_fee,
+      SUM(COALESCE(realized_pnl, 0)) as total_realized_pnl
     FROM fills
     WHERE ts > NOW() - INTERVAL '${interval}'
   `;
