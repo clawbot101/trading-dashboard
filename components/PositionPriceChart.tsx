@@ -6,15 +6,15 @@ const { createChart, ColorType } = require('lightweight-charts');
 interface PositionPriceChartProps {
   symbol: string;
   entryPrice: number | null;
+  liqPrice?: number | null;
   side: string;
   height?: number;
 }
 
-export default function PositionPriceChart({ symbol, entryPrice, side, height = 128 }: PositionPriceChartProps) {
+export default function PositionPriceChart({ symbol, entryPrice, liqPrice, side, height = 160 }: PositionPriceChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
-  const entryLineRef = useRef<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,7 +53,7 @@ export default function PositionPriceChart({ symbol, entryPrice, side, height = 
 
     // Add entry price line
     if (entryPrice && entryPrice > 0) {
-      const entryLine = chart.addPriceLine({
+      chart.addPriceLine({
         price: entryPrice,
         color: '#f59e0b',
         lineWidth: 1,
@@ -61,7 +61,18 @@ export default function PositionPriceChart({ symbol, entryPrice, side, height = 
         axisLabelVisible: true,
         title: 'Entry',
       });
-      entryLineRef.current = entryLine;
+    }
+
+    // Add liquidation price line
+    if (liqPrice && liqPrice > 0) {
+      chart.addPriceLine({
+        price: liqPrice,
+        color: '#ef4444',
+        lineWidth: 1,
+        lineStyle: 2, // dashed
+        axisLabelVisible: true,
+        title: 'Liq',
+      });
     }
 
     const handleResize = () => {
@@ -75,7 +86,7 @@ export default function PositionPriceChart({ symbol, entryPrice, side, height = 
       window.removeEventListener('resize', handleResize);
       chart.remove();
     };
-  }, [height, entryPrice, side]);
+  }, [height, entryPrice, liqPrice, side]);
 
   // Fetch price history from Hyperliquid
   useEffect(() => {
@@ -120,19 +131,30 @@ export default function PositionPriceChart({ symbol, entryPrice, side, height = 
 
   if (loading) {
     return (
-      <div className="h-32 bg-hl-panel rounded flex items-center justify-center text-hl-muted text-xs">
-        Loading...
+      <div>
+        <div className="text-xs text-hl-secondary mb-1">{symbol} Price (24h)</div>
+        <div className="h-32 bg-hl-panel rounded flex items-center justify-center text-hl-muted text-xs">
+          Loading...
+        </div>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="h-32 bg-hl-panel rounded flex items-center justify-center text-hl-muted text-xs">
-        {error}
+      <div>
+        <div className="text-xs text-hl-secondary mb-1">{symbol} Price (24h)</div>
+        <div className="h-32 bg-hl-panel rounded flex items-center justify-center text-hl-muted text-xs">
+          {error}
+        </div>
       </div>
     );
   }
 
-  return <div ref={chartContainerRef} className="rounded bg-hl-panel" />;
+  return (
+    <div>
+      <div className="text-xs text-hl-secondary mb-1">{symbol} Price (24h)</div>
+      <div ref={chartContainerRef} className="rounded bg-hl-panel" />
+    </div>
+  );
 }

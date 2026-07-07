@@ -96,7 +96,7 @@ function formatUsdShort(n: number | null | undefined) {
 function formatPnlShort(n: number | null | undefined) {
   if (!n && n !== 0) return '--';
   const sign = n >= 0 ? '+' : '';
-  if (Math.abs(n) >= 1e6) return `${sign}${(n / 1e6).toFixed(1)}M`;
-  if (Math.abs(n) >= 1e3) return `${sign}${(n / 1e3).toFixed(1)}K`;
-  return `${sign}${n.toFixed(0)}`;
+  if (Math.abs(n) >= 1e6) return `${sign}${(n / 1e6).toFixed(2)}M`;
+  if (Math.abs(n) >= 1e3) return `${sign}${(n / 1e3).toFixed(2)}K`;
+  return `${sign}${n.toFixed(2)}`;
 }

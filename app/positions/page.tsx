@@ -216,13 +216,51 @@ function PositionRow({
       {expanded && (
         <tr>
           <td colSpan={14} className="bg-hl-hover p-4">
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-4 gap-4">
+              {/* Position details */}
+              <div>
+                <div className="text-xs text-hl-secondary mb-2">Position Details</div>
+                <div className="space-y-1 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-hl-muted">Notional</span>
+                    <span className="font-num">{formatUsd(position.notional)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-hl-muted">Mark Price</span>
+                    <span className="font-num">{formatPrice(position.mark_price)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-hl-muted">Entry Price</span>
+                    <span className="font-num">{formatPrice(position.avg_entry_price)}</span>
+                  </div>
+                  <div className={`flex justify-between ${liqWarning ? 'text-amber-500' : ''}`}>
+                    <span className="text-hl-muted">Liq. Price</span>
+                    <span className="font-num">{formatPrice(position.liquidation_price)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-hl-muted">Funding</span>
+                    <span className={`font-num ${position.funding_accrued >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                      {formatPnl(position.funding_accrued)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-hl-muted">Fees</span>
+                    <span className="font-num">{formatUsd(position.cumulative_fee)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-hl-muted">Margin</span>
+                    <span className="font-num">{formatUsd(position.margin)}</span>
+                  </div>
+                </div>
+              </div>
+
               {/* Mini price chart */}
               <PositionPriceChart
                 symbol={position.symbol}
                 entryPrice={position.avg_entry_price}
+                liqPrice={position.liquidation_price}
                 side={position.side}
-                height={128}
+                height={160}
               />
 
               {/* Recent fills */}
