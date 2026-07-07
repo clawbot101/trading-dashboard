@@ -34,6 +34,8 @@ export interface OrderEventGroup {
   venue: string;
   side: string;
   order_type: string;
+  price: number | null;
+  qty: number | null;
   latest_status: string;
   created_ts: string;
   latest_ts: string;
@@ -138,6 +140,8 @@ export async function getOrderEvents(
       venue,
       side,
       order_type,
+      price,
+      qty,
       event_status as latest_status,
       ts as created_ts,
       ts as latest_ts

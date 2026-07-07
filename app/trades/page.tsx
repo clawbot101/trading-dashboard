@@ -224,16 +224,16 @@ export default function TradesPage() {
             <tbody>
               {orders.length > 0 ? (
                 orders.map((o: any) => (
-                  <tr key={o.strategy_order_id}>
-                    <td className="text-xs font-mono">{o.strategy_order_id?.slice(0, 8)}</td>
+                  <tr key={o.strategy_order_id || `${o.symbol}-${o.created_ts}`}>
+                    <td className="text-xs font-mono">{o.strategy_order_id?.slice(0, 8) || '--'}</td>
                     <td className="font-medium">{o.symbol}</td>
-                    <td className={`badge-${o.side.toLowerCase()}`}>{o.side}</td>
-                    <td className="text-sm">{o.order_type}</td>
+                    <td className={`badge-${(o.side || '').toLowerCase()}`}>{o.side || '--'}</td>
+                    <td className="text-sm">{o.order_type || '--'}</td>
                     <td className="font-num text-right">{formatPrice(o.price)}</td>
                     <td className="font-num text-right">{formatQty(o.qty)}</td>
                     <td>
-                      <span className={`badge-${statusClass(o.latest_status)}`}>
-                        {o.latest_status}
+                      <span className={`badge-${statusClass(o.latest_status || '')}`}>
+                        {o.latest_status || '--'}
                       </span>
                     </td>
                     <td className="text-xs text-hl-muted">{formatTime(o.created_ts)}</td>
