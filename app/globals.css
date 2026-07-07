@@ -126,6 +126,24 @@
     font-weight: 500;
   }
   
+  .badge-buy {
+    background: rgba(38, 166, 154, 0.15);
+    color: var(--profit);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  
+  .badge-sell {
+    background: rgba(239, 83, 80, 0.15);
+    color: var(--loss);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  
   /* Venue badges */
   .venue-hl {
     background: rgba(80, 210, 193, 0.2);
