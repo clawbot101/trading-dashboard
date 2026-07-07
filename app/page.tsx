@@ -177,13 +177,18 @@ export default function OverviewPage() {
                     className="flex items-center justify-between p-2 bg-hl-hover rounded"
                   >
                     <span className="text-sm font-medium">{s.strategy_name}</span>
-                    <span
-                      className={`font-num text-sm ${
-                        s.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
-                      }`}
-                    >
-                      {formatPnl(s.pnl)}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <span className="font-num text-sm text-hl-secondary">
+                        {formatUsd(s.notional)}
+                      </span>
+                      <span
+                        className={`font-num text-sm ${
+                          s.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                        }`}
+                      >
+                        {formatPnl(s.pnl)}
+                      </span>
+                    </div>
                   </div>
                 ))
               ) : (

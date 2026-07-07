@@ -21,6 +21,9 @@ export interface LivePosition {
   equity: number | null;
   notional: number;
   side: string;
+  liquidation_price: number | null;
+  margin: number | null;
+  funding_accrued: number | null;
 }
 
 export interface PositionSummary {
@@ -58,7 +61,10 @@ export async function getLivePositions(
         WHEN position_qty > 0 THEN 'LONG'
         WHEN position_qty < 0 THEN 'SHORT'
         ELSE 'FLAT'
-      END as side
+      END as side,
+      liquidation_price,
+      margin,
+      funding_accrued
     FROM trading_state
     WHERE position_qty != 0
     ORDER BY ABS(unrealized_pnl) DESC
@@ -114,4 +120,36 @@ export async function getAllOpenOrders(
   `;
 
   return query<any>(sql);
+}
+
+/**
+ * Get recent fills for a symbol/session.
+ */
+export async function getRecentFillsForPosition(
+  symbol: string,
+  strategyName?: string,
+  limit = 10
+): Promise<any[]> {
+  const sql = `
+    SELECT 
+      f.ts,
+      f.symbol,
+      f.side,
+      f.fill_qty,
+      f.fill_price,
+      f.fee,
+      sess.strategy_name
+    FROM fills f
+    JOIN trading_sessions sess ON f.session_id = sess.session_id
+    WHERE f.symbol = $1
+    ${strategyName ? 'AND sess.strategy_name = $2' : ''}
+    ORDER BY f.ts DESC
+    LIMIT ${strategyName ? '$3' : '$2'}
+  `;
+
+  const params = strategyName
+    ? [symbol, strategyName, limit]
+    : [symbol, limit];
+
+  return query<any>(sql, params);
 }

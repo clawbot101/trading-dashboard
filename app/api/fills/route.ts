@@ -1,23 +1,18 @@
 /**
- * Fills API route.
+ * Fills API route for expanded position rows.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getFills, getFillTotals, getDistinctStrategies, getDistinctSymbols } from '../../../lib/queries/trades';
+import { getRecentFillsForPosition } from '../../../lib/queries/positions';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const FillsParamsSchema = z.object({
-  venue: z.string().default("all"),
-  strategy: z.string().default("all"),
-  range: z.enum(['24h', '7d', '30d', '90d', 'all']).default('24h'),
-  symbol: z.string().optional(),
-  side: z.enum(['buy', 'sell']).optional(),
-  isMaker: z.enum(['true', 'false']).transform(v => v === 'true').optional(),
-  page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(500).default(50),
+  symbol: z.string(),
+  strategy: z.string().optional(),
+  limit: z.coerce.number().default(10),
 });
 
 export async function GET(req: NextRequest) {
@@ -25,17 +20,12 @@ export async function GET(req: NextRequest) {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
     const q = FillsParamsSchema.parse(raw);
 
-    const venue = q.venue === 'all' ? undefined : q.venue;
-    const strategy = q.strategy === 'all' ? undefined : q.strategy;
-    const timeRange = q.range.toUpperCase();
-
-    const fills = await getFills(timeRange, venue, strategy, q.symbol, q.side, q.isMaker, q.page, q.pageSize);
-    const totals = await getFillTotals(timeRange, venue, strategy, q.symbol, q.side, q.isMaker);
+    const fills = await getRecentFillsForPosition(q.symbol, q.strategy, q.limit);
 
     return NextResponse.json({
       ok: true,
       query: q,
-      data: { fills, totals },
+      data: { fills },
       as_of_ts: new Date().toISOString(),
     });
   } catch (err: any) {

@@ -19,7 +19,7 @@ export default function PositionsPage() {
   const positions = data?.data?.positions || [];
   const summary = data?.data?.summary;
   const openOrders = data?.data?.openOrders || [];
-  const asOf = data?.as_of;
+  const asOfTs = data?.as_of_ts;
 
   // Sort by |uPnL| desc
   const sortedPositions = [...positions].sort(
@@ -139,7 +139,7 @@ export default function PositionsPage() {
 
       {/* Footer */}
       <div className="mt-4 text-xs text-hl-muted">
-        Last update: {formatTime(asOf)}
+        Last update: {formatTime(asOfTs)}
       </div>
     </div>
   );
@@ -157,6 +157,14 @@ function PositionRow({
   onToggle: () => void;
   orders: any[];
 }) {
+  // Fetch fills when expanded
+  const { data: fillsData, isLoading: fillsLoading } = useSWR(
+    expanded ? `/api/fills?symbol=${position.symbol}&strategy=${position.strategy_name}&limit=5` : null,
+    fetcher,
+    { dedupingInterval: 5000 }
+  );
+  const fills = fillsData?.data?.fills || [];
+
   const liqDistancePct = position.liquidation_price && position.mark_price
     ? (Math.abs(position.liquidation_price - position.mark_price) / position.mark_price) * 100
     : null;
@@ -208,7 +216,21 @@ function PositionRow({
               {/* Recent fills */}
               <div>
                 <div className="text-xs text-hl-secondary mb-2">Recent Fills</div>
-                <div className="text-sm text-hl-muted">[Fill history placeholder]</div>
+                {fillsLoading ? (
+                  <div className="text-sm text-hl-muted">Loading...</div>
+                ) : fills.length > 0 ? (
+                  <div className="space-y-1">
+                    {fills.map((f: any) => (
+                      <div key={`${f.ts}-${f.fill_qty}`} className="text-sm">
+                        <span className={`badge-${f.side.toLowerCase()}`}>{f.side}</span>
+                        <span className="ml-2 font-num">{f.fill_qty}@{formatPrice(f.fill_price)}</span>
+                        <span className="ml-2 text-hl-muted">{formatTimeAgo(f.ts)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-sm text-hl-muted">No recent fills</div>
+                )}
               </div>
 
               {/* Open orders */}

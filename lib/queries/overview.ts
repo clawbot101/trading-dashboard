@@ -28,6 +28,7 @@ export interface StrategyLeaderboardRow {
   pnl: number;
   return_pct: number;
   latest_equity: number;
+  notional: number;
 }
 
 export interface VenueSplitRow {
@@ -145,7 +146,8 @@ export async function getStrategyLeaderboard(
       ts.strategy_name,
       'running' as status,
       COALESCE(SUM(ts.realized_pnl + ts.unrealized_pnl), 0) as pnl,
-      COALESCE(SUM(ts.equity), 0) as latest_equity
+      COALESCE(SUM(ts.equity), 0) as latest_equity,
+      COALESCE(SUM(ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0))), 0) as notional
     FROM trading_state ts
     WHERE ts.position_qty != 0
     GROUP BY ts.strategy_name
@@ -161,6 +163,7 @@ export async function getStrategyLeaderboard(
     pnl: Number(r.pnl) || 0,
     return_pct: Number(r.latest_equity) > 0 ? (Number(r.pnl) / Number(r.latest_equity)) * 100 : 0,
     latest_equity: Number(r.latest_equity) || 0,
+    notional: Number(r.notional) || 0,
   }));
 }
 
