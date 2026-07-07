@@ -196,7 +196,7 @@ function PositionRow({
           <span className={`venue-${position.venue === 'Hyperliquid' ? 'hl' : 'lt'}`}>
             {position.venue === 'Hyperliquid' ? 'HL' : 'LT'}
           </span>
-          <span className="ml-1">{position.symbol}</span>
+          <span className="ml-2">{position.symbol}</span>
         </td>
         <td className="text-hl-secondary">{position.strategy_name}</td>
         <td>
