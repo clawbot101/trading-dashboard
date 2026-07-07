@@ -24,6 +24,12 @@ export interface LivePosition {
   liquidation_price: number | null;
   margin: number | null;
   funding_accrued: number | null;
+  funding_rate: number | null;
+  cumulative_fee: number | null;
+  cumulative_open_fee: number | null;
+  cumulative_close_fee: number | null;
+  last_trade_fee: number | null;
+  last_trade_ts: string | null;
 }
 
 export interface PositionSummary {
@@ -32,6 +38,8 @@ export interface PositionSummary {
   net_exposure: number;
   gross_leverage: number;
   total_unrealized_pnl: number;
+  total_funding: number | null;
+  total_margin: number | null;
 }
 
 /**
@@ -56,7 +64,7 @@ export async function getLivePositions(
       realized_pnl,
       leverage,
       equity,
-      ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)) as notional,
+      COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) as notional,
       CASE 
         WHEN position_qty > 0 THEN 'LONG'
         WHEN position_qty < 0 THEN 'SHORT'
@@ -64,7 +72,13 @@ export async function getLivePositions(
       END as side,
       liquidation_price,
       margin,
-      funding_accrued
+      funding_accrued,
+      funding_rate,
+      cumulative_fee,
+      cumulative_open_fee,
+      cumulative_close_fee,
+      last_trade_fee,
+      last_trade_ts
     FROM trading_state
     WHERE position_qty != 0
     ORDER BY ABS(unrealized_pnl) DESC
@@ -82,11 +96,13 @@ export async function getPositionSummary(
 ): Promise<PositionSummary | null> {
   const sql = `
     SELECT
-      SUM(CASE WHEN position_qty > 0 THEN ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)) ELSE 0 END) as total_notional_long,
-      SUM(CASE WHEN position_qty < 0 THEN ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)) ELSE 0 END) as total_notional_short,
+      SUM(CASE WHEN position_qty > 0 THEN COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) ELSE 0 END) as total_notional_long,
+      SUM(CASE WHEN position_qty < 0 THEN COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) ELSE 0 END) as total_notional_short,
       SUM(position_qty * COALESCE(mark_price, avg_entry_price, 0)) as net_exposure,
       AVG(CASE WHEN position_qty != 0 AND leverage IS NOT NULL THEN ABS(leverage) ELSE NULL END) as gross_leverage,
-      SUM(unrealized_pnl) as total_unrealized_pnl
+      SUM(unrealized_pnl) as total_unrealized_pnl,
+      SUM(funding_accrued) as total_funding,
+      SUM(margin) as total_margin
     FROM trading_state
     WHERE position_qty != 0
   `;
@@ -152,4 +168,28 @@ export async function getRecentFillsForPosition(
     : [symbol, limit];
 
   return query<any>(sql, params);
+}
+
+/**
+ * Get recent funding payments.
+ */
+export async function getRecentFundingPayments(
+  limit = 20
+): Promise<any[]> {
+  const sql = `
+    SELECT 
+      ts,
+      session_id,
+      venue,
+      symbol,
+      funding_rate,
+      position_qty,
+      mark_price,
+      payment_amount
+    FROM funding_payments
+    ORDER BY ts DESC
+    LIMIT $1
+  `;
+
+  return query<any>(sql, [limit]);
 }

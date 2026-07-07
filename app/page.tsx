@@ -34,6 +34,15 @@ export default function OverviewPage() {
   const recentFills = data?.data?.recentFills || [];
   const asOf = data?.as_of_ts;
 
+  // Fetch funding payments
+  const { data: fundingData } = useSWR(
+    '/api/funding-payments?limit=10',
+    fetcher,
+    { refreshInterval: paused ? 0 : 60000, dedupingInterval: 30000 }
+  );
+  const fundingPayments = fundingData?.data?.payments || [];
+  const last24hFunding = fundingData?.data?.last24hPayment;
+
   // Compute PnL curve from equity curve
   const pnlCurve = useMemo(() => {
     if (!equityCurve.length) return [];
@@ -216,8 +225,8 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* Bottom row: PnL attribution + recent fills */}
-      <div className="grid grid-cols-2 gap-4">
+      {/* Bottom row: PnL attribution + recent fills + funding */}
+      <div className="grid grid-cols-3 gap-4">
         {/* PnL attribution */}
         <div className="panel p-4">
           <div className="text-xs text-hl-secondary mb-2">PnL Attribution (Daily)</div>
@@ -235,7 +244,7 @@ export default function OverviewPage() {
           <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
           <div className="space-y-1">
             {recentFills.length > 0 ? (
-              recentFills.slice(0, 10).map((f: any) => (
+              recentFills.slice(0, 8).map((f: any) => (
                 <div
                   key={`${f.ts}-${f.symbol}`}
                   className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
@@ -253,6 +262,37 @@ export default function OverviewPage() {
               ))
             ) : (
               <div className="text-hl-muted text-sm py-4">No recent fills</div>
+            )}
+          </div>
+        </div>
+
+        {/* Funding Payments */}
+        <div className="panel p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="text-xs text-hl-secondary">Funding Payments</div>
+            <div className={`text-xs font-num ${(last24hFunding || 0) >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+              24h: {formatPnl(last24hFunding)}
+            </div>
+          </div>
+          <div className="space-y-1">
+            {fundingPayments.length > 0 ? (
+              fundingPayments.slice(0, 8).map((p: any) => (
+                <div
+                  key={`${p.ts}-${p.symbol}`}
+                  className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-hl-muted">{formatTimeAgo(p.ts)}</span>
+                    <span className="font-medium">{p.symbol}</span>
+                    <span className="text-hl-muted text-xs">@{(Number(p.funding_rate) * 100).toFixed(4)}%</span>
+                  </div>
+                  <div className={`font-num ${Number(p.payment_amount) >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                    {formatPnl(Number(p.payment_amount))}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="text-hl-muted text-sm py-4">No funding payments yet</div>
             )}
           </div>
         </div>

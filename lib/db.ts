@@ -107,6 +107,13 @@ export interface TradingState {
   liquidation_price: number | null;
   margin: number | null;
   funding_accrued: number | null;
+  funding_rate: number | null;
+  position_notional_usd: number | null;
+  cumulative_fee: number | null;
+  cumulative_open_fee: number | null;
+  cumulative_close_fee: number | null;
+  last_trade_fee: number | null;
+  last_trade_ts: string | null;
   stop_price: number | null;
   take_profit_price: number | null;
 }
@@ -121,6 +128,7 @@ export interface EquitySnapshot {
   unrealized_pnl: number;
   realized_pnl: number;
   margin_used: number | null;
+  funding_accrued: number | null;
   account_leverage: number | null;
   withdrawable: number | null;
 }
@@ -172,10 +180,13 @@ export interface FundingPayment {
   session_id: string;
   venue: string;
   symbol: string;
+  base_asset: string;
+  quote_asset: string;
   funding_rate: number;
-  payment: number;
-  position_size: number;
+  position_qty: number;
   mark_price: number;
+  payment_amount: number;
+  raw_payload: Record<string, unknown> | null;
 }
 
 export interface StrategySignal {

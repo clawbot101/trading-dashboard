@@ -11,6 +11,8 @@ export interface OverviewStats {
   pnl_24h_pct: number;
   total_unrealized_pnl: number;
   total_realized_pnl: number;
+  total_funding: number;
+  total_margin: number;
   max_drawdown_pct: number;
   open_positions: number;
   gross_exposure: number;
@@ -86,8 +88,10 @@ export async function getOverviewStats(
     SELECT
       COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
       COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
+      COALESCE(SUM(funding_accrued), 0) as total_funding,
+      COALESCE(SUM(margin), 0) as total_margin,
       COUNT(CASE WHEN position_qty != 0 THEN 1 END) as open_positions,
-      COALESCE(SUM(ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))), 0) as gross_exposure
+      COALESCE(SUM(COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)))), 0) as gross_exposure
     FROM trading_state
     WHERE position_qty != 0
   `);
@@ -103,6 +107,8 @@ export async function getOverviewStats(
     pnl_24h_pct: pnl24hPct,
     total_unrealized_pnl: stateRow?.total_unrealized_pnl || 0,
     total_realized_pnl: stateRow?.total_realized_pnl || 0,
+    total_funding: stateRow?.total_funding || 0,
+    total_margin: stateRow?.total_margin || 0,
     max_drawdown_pct: 0,
     open_positions: stateRow?.open_positions || 0,
     gross_exposure: stateRow?.gross_exposure || 0,
@@ -147,7 +153,7 @@ export async function getStrategyLeaderboard(
       'running' as status,
       COALESCE(SUM(ts.realized_pnl + ts.unrealized_pnl), 0) as pnl,
       COALESCE(SUM(ts.equity), 0) as latest_equity,
-      COALESCE(SUM(ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0))), 0) as notional
+      COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) as notional
     FROM trading_state ts
     WHERE ts.position_qty != 0
     GROUP BY ts.strategy_name

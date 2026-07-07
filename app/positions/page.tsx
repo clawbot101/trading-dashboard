@@ -64,7 +64,7 @@ export default function PositionsPage() {
       {/* Summary strip */}
       {!isLoading && summary && (
         <div className="panel p-3 mb-4">
-          <div className="grid grid-cols-5 gap-4 text-sm">
+          <div className="grid grid-cols-7 gap-4 text-sm">
             <div>
               <span className="text-hl-secondary">Long Notional</span>
               <div className="font-num text-hl-profit">{formatUsd(summary.total_notional_long)}</div>
@@ -87,6 +87,16 @@ export default function PositionsPage() {
                 {formatPnl(summary.total_unrealized_pnl)}
               </div>
             </div>
+            <div>
+              <span className="text-hl-secondary">Total Funding</span>
+              <div className={`font-num ${summary.total_funding >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                {formatPnl(summary.total_funding)}
+              </div>
+            </div>
+            <div>
+              <span className="text-hl-secondary">Total Margin</span>
+              <div className="font-num">{formatUsd(summary.total_margin)}</div>
+            </div>
           </div>
         </div>
       )}
@@ -108,6 +118,7 @@ export default function PositionsPage() {
                 <th className="text-right">Liq. Price</th>
                 <th className="text-right">uPnL</th>
                 <th className="text-right">Funding</th>
+                <th className="text-right">Fees</th>
                 <th className="text-right">Margin</th>
                 <th className="text-left">Updated</th>
               </tr>
@@ -127,7 +138,7 @@ export default function PositionsPage() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={13} className="text-center text-hl-muted py-8">
+                  <td colSpan={14} className="text-center text-hl-muted py-8">
                     No open positions
                   </td>
                 </tr>
@@ -196,6 +207,7 @@ function PositionRow({
           {formatPnl(position.unrealized_pnl)}
         </td>
         <td className="font-num text-right">{formatPnl(position.funding_accrued)}</td>
+        <td className="font-num text-right">{formatUsd(position.cumulative_fee)}</td>
         <td className="font-num text-right">{formatUsd(position.margin)}</td>
         <td className="text-hl-muted text-xs">{formatTimeAgo(position.updated_at)}</td>
       </tr>
@@ -203,7 +215,7 @@ function PositionRow({
       {/* Expanded row */}
       {expanded && (
         <tr>
-          <td colSpan={13} className="bg-hl-hover p-4">
+          <td colSpan={14} className="bg-hl-hover p-4">
             <div className="grid grid-cols-3 gap-4">
               {/* Mini price chart */}
               <PositionPriceChart
