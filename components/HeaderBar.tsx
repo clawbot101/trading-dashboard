@@ -28,7 +28,6 @@ export default function HeaderBar() {
           <NavLink href="/">Overview</NavLink>
           <NavLink href="/positions">Positions</NavLink>
           <NavLink href="/trades">Trades</NavLink>
-          <NavLink href="/lifecycles">Lifecycles</NavLink>
         </div>
 
         {/* Right: Venue status + Equity + 24h PnL */}
