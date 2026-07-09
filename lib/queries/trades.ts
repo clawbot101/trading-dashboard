@@ -93,9 +93,9 @@ export async function getFills(
 ): Promise<FillRow[]> {
   const offset = (page - 1) * pageSize;
 
-  const venueFilter = venue && venue !== 'all' ? `AND venue = '${venue}'` : '';
-  const strategyFilter = strategy && strategy !== 'all' ? `AND strategy_name = '${strategy}'` : '';
-  const symbolFilter = symbol ? `AND symbol = '${symbol}'` : '';
+  const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
+  const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
+  const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
 
   const sql = `
     SELECT 
@@ -112,8 +112,10 @@ export async function getFills(
       f.broker_order_id,
       f.is_maker,
       f.realized_pnl,
+      sess.strategy_name,
       ABS(f.fill_qty * f.fill_price) as notional
     FROM fills f
+    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
     WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
     ${venueFilter}
     ${strategyFilter}
@@ -135,13 +137,14 @@ export async function getFillCount(
   strategy?: string,
   symbol?: string
 ): Promise<number> {
-  const venueFilter = venue && venue !== 'all' ? `AND venue = '${venue}'` : '';
-  const strategyFilter = strategy && strategy !== 'all' ? `AND strategy_name = '${strategy}'` : '';
-  const symbolFilter = symbol ? `AND symbol = '${symbol}'` : '';
+  const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
+  const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
+  const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
 
   const sql = `
     SELECT COUNT(*) as count
     FROM fills f
+    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
     WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
     ${venueFilter}
     ${strategyFilter}
@@ -162,19 +165,20 @@ export async function getFillTotals(
   strategy?: string,
   symbol?: string
 ): Promise<FillTotals | null> {
-  const venueFilter = venue && venue !== 'all' ? `AND venue = '${venue}'` : '';
-  const strategyFilter = strategy && strategy !== 'all' ? `AND strategy_name = '${strategy}'` : '';
-  const symbolFilter = symbol ? `AND symbol = '${symbol}'` : '';
+  const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
+  const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
+  const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
 
   const sql = `
     SELECT
       COUNT(*) as total_rows,
       SUM(fill_qty) as total_qty,
       SUM(ABS(fill_qty * fill_price)) as total_notional,
-      SUM(ABS(COALESCE(fee, 0))) as total_fee,
-      SUM(COALESCE(realized_pnl, 0)) as total_realized_pnl
-    FROM fills
-    WHERE ts >= '${from_ts}' AND ts <= '${to_ts}'
+      SUM(ABS(COALESCE(f.fee, 0))) as total_fee,
+      SUM(COALESCE(f.realized_pnl, 0)) as total_realized_pnl
+    FROM fills f
+    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+    WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
     ${venueFilter}
     ${strategyFilter}
     ${symbolFilter}
