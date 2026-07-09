@@ -80,6 +80,54 @@ export function timeRangeToTimestamps(range: string): { from_ts: string; to_ts: 
 }
 
 /**
+ * Get paginated fills from fills table.
+ */
+export async function getFills(
+  from_ts: string,
+  to_ts: string,
+  venue?: string,
+  strategy?: string,
+  symbol?: string,
+  page = 1,
+  pageSize = 50
+): Promise<FillRow[]> {
+  const offset = (page - 1) * pageSize;
+
+  const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
+  const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
+  const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
+
+  const sql = `
+    SELECT 
+      f.fill_id,
+      f.ts,
+      f.session_id,
+      f.venue,
+      f.symbol,
+      f.side,
+      f.fill_price,
+      f.fill_qty,
+      f.fee,
+      f.strategy_order_id,
+      f.broker_order_id,
+      f.is_maker,
+      f.realized_pnl,
+      sess.strategy_name,
+      ABS(f.fill_qty * f.fill_price) as notional
+    FROM fills f
+    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+    WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
+    ${venueFilter}
+    ${strategyFilter}
+    ${symbolFilter}
+    ORDER BY f.ts DESC
+    LIMIT ${pageSize} OFFSET ${offset}
+  `;
+
+  return query<FillRow>(sql);
+}
+
+/**
  * Position Lifecycle with full PnL accounting.
  * Groups fills by position cycle (open -> close).
  */
