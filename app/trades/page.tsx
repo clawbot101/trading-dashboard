@@ -10,7 +10,7 @@ const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
 
 export default function TradesPage() {
   const [tab, setTab] = useState<'fills' | 'orders'>('fills');
-  const [timeRange, setTimeRange] = useState('24H');
+  const [timeRange, setTimeRange] = useState('ALL');
   const [page, setPage] = useState(1);
   const [paused, setPaused] = useState(false);
 
