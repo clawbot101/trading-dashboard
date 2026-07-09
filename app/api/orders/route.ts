@@ -4,15 +4,15 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
-import { getOrderEvents } from '../../../lib/queries/trades';
+import { getOrderEvents, getOrderEventCount, timeRangeToTimestamps } from '../../../lib/queries/trades';
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 const OrdersParamsSchema = z.object({
-  venue: z.string().default("all"),
-  strategy: z.string().default("all"),
-  range: z.enum(['24h', '7d', '30d', '90d', 'all']).default('24h'),
+  timeRange: z.enum(['24H', '7D', '30D', '90D', 'ALL']).default('ALL'),
+  venue: z.string().default('all'),
+  strategy: z.string().default('all'),
   symbol: z.string().optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(500).default(50),
@@ -23,26 +23,27 @@ export async function GET(req: NextRequest) {
     const raw = Object.fromEntries(req.nextUrl.searchParams.entries());
     const q = OrdersParamsSchema.parse(raw);
 
+    const { from_ts, to_ts } = timeRangeToTimestamps(q.timeRange);
     const venue = q.venue === 'all' ? undefined : q.venue;
     const strategy = q.strategy === 'all' ? undefined : q.strategy;
-    const timeRange = q.range.toUpperCase();
 
-    const orderEvents = await getOrderEvents(timeRange, venue, strategy, q.symbol, q.page, q.pageSize);
+    const orderEvents = await getOrderEvents(from_ts, to_ts, venue, strategy, q.symbol, q.page, q.pageSize);
+    const totalRows = await getOrderEventCount(from_ts, to_ts, venue, strategy, q.symbol);
 
     return NextResponse.json({
       ok: true,
       query: q,
-      data: { orderEvents },
+      data: { orderEvents, totalRows },
       as_of_ts: new Date().toISOString(),
     });
   } catch (err: any) {
-    console.error("[api/orders] error", {
+    console.error('[api/orders] error', {
       message: err?.message,
       code: err?.code,
       stack: err?.stack,
     });
     return NextResponse.json(
-      { ok: false, error: err?.message ?? "Internal server error", code: err?.code ?? null },
+      { ok: false, error: err?.message ?? 'Internal server error', code: err?.code ?? null },
       { status: 500 }
     );
   }

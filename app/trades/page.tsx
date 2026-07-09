@@ -24,7 +24,7 @@ export default function TradesPage() {
   );
 
   const { data: ordersData } = useSWR(
-    `/api/orders?range=${timeRange.toLowerCase()}&page=${page}&pageSize=50`,
+    `/api/orders?timeRange=${timeRange}&page=${page}&pageSize=50`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 5000,
@@ -34,8 +34,37 @@ export default function TradesPage() {
 
   const fills = data?.data?.fills || [];
   const totals = data?.data?.totals;
+  const totalFillRows = data?.data?.totalRows || 0;
   const orders = ordersData?.data?.orderEvents || [];
-  const asOf = data?.as_of;
+  const totalOrderRows = ordersData?.data?.totalRows || 0;
+  const asOf = data?.as_of_ts;
+
+  const totalPages = Math.ceil(totalFillRows / 50);
+  const orderPages = Math.ceil(totalOrderRows / 50);
+
+  // Export fills to CSV
+  const exportCSV = () => {
+    const headers = ['Time', 'Venue', 'Symbol', 'Side', 'Price', 'Qty', 'Notional', 'Fee', 'Realized PnL'];
+    const rows = fills.map((f: any) => [
+      f.ts,
+      f.venue,
+      f.symbol,
+      f.side,
+      f.fill_price,
+      f.fill_qty,
+      f.notional,
+      f.fee || 0,
+      f.realized_pnl || 0,
+    ]);
+    const csv = [headers.join(','), ...rows.map((r: any[]) => r.join(','))].join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `fills-${timeRange.toLowerCase()}-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <div className="px-4 py-6 max-w-7xl mx-auto">
@@ -185,10 +214,12 @@ export default function TradesPage() {
             >
               Previous
             </button>
-            <span className="text-sm text-hl-secondary">Page {page}</span>
+            <span className="text-sm text-hl-secondary">
+              Page {page} of {totalPages || 1} ({totalFillRows} fills)
+            </span>
             <button
               onClick={() => setPage(page + 1)}
-              disabled={fills.length < 50}
+              disabled={page >= totalPages}
               className="px-3 py-1 text-sm bg-hl-panel rounded disabled:opacity-50"
             >
               Next
@@ -196,10 +227,16 @@ export default function TradesPage() {
           </div>
 
           {/* CSV export */}
-          <div className="p-3 border-t border-hl-border">
-            <button className="px-3 py-1 text-sm bg-hl-accent text-hl-bg rounded">
+          <div className="flex items-center justify-between p-3 border-t border-hl-border">
+            <button
+              onClick={exportCSV}
+              className="px-3 py-1 text-sm bg-hl-accent text-hl-bg rounded"
+            >
               Export CSV
             </button>
+            <span className="text-xs text-hl-secondary">
+              Exports current page ({fills.length} fills)
+            </span>
           </div>
         </div>
       )}
@@ -210,45 +247,76 @@ export default function TradesPage() {
           <table className="w-full data-table">
             <thead>
               <tr>
-                <th className="text-left">Order ID</th>
+                <th className="text-left">Time</th>
+                <th className="text-left">Venue</th>
                 <th className="text-left">Symbol</th>
                 <th className="text-left">Side</th>
                 <th className="text-left">Type</th>
+                <th className="text-left">Event Type</th>
+                <th className="text-left">Status</th>
                 <th className="text-right">Price</th>
                 <th className="text-right">Qty</th>
-                <th className="text-left">Status</th>
-                <th className="text-left">Created</th>
-                <th className="text-left">Updated</th>
+                <th className="text-left">Note</th>
               </tr>
             </thead>
             <tbody>
               {orders.length > 0 ? (
                 orders.map((o: any) => (
-                  <tr key={o.strategy_order_id || `${o.symbol}-${o.created_ts}`}>
-                    <td className="text-xs font-mono">{o.strategy_order_id?.slice(0, 8) || '--'}</td>
+                  <tr key={o.event_id || `${o.ts}-${o.symbol}`}>
+                    <td className="text-xs text-hl-muted">{formatTime(o.ts)}</td>
+                    <td className={`venue-${o.venue === 'Hyperliquid' ? 'hl' : 'lt'}`}>
+                      {o.venue === 'Hyperliquid' ? 'HL' : 'LT'}
+                    </td>
                     <td className="font-medium">{o.symbol}</td>
-                    <td className={`badge-${(o.side || '').toLowerCase()}`}>{o.side || '--'}</td>
-                    <td className="text-sm">{o.order_type || '--'}</td>
-                    <td className="font-num text-right">{formatPrice(o.price)}</td>
-                    <td className="font-num text-right">{formatQty(o.qty)}</td>
                     <td>
-                      <span className={`badge-${statusClass(o.latest_status || '')}`}>
-                        {o.latest_status || '--'}
+                      <span className={`badge-${(o.side || '').toLowerCase()}`}>{o.side || '--'}</span>
+                    </td>
+                    <td className="text-sm">{o.order_type || '--'}</td>
+                    <td className="text-sm">
+                      <span className={o.event_type === 'filled' ? 'text-hl-profit' : o.event_type === 'rejected' ? 'text-hl-loss' : 'text-hl-secondary'}>
+                        {o.event_type}
                       </span>
                     </td>
-                    <td className="text-xs text-hl-muted">{formatTime(o.created_ts)}</td>
-                    <td className="text-xs text-hl-muted">{formatTime(o.latest_ts)}</td>
+                    <td>
+                      <span className={`badge-${statusClass(o.event_status || '')}`}>
+                        {o.event_status || '--'}
+                      </span>
+                    </td>
+                    <td className="font-num text-right">{formatPrice(o.price)}</td>
+                    <td className="font-num text-right">{formatQty(o.qty)}</td>
+                    <td className="text-xs text-hl-muted">{o.note || '--'}</td>
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={9} className="text-center text-hl-muted py-8">
+                  <td colSpan={10} className="text-center text-hl-muted py-8">
                     No order events in range
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+
+          {/* Order pagination */}
+          <div className="flex items-center justify-between p-3 border-t border-hl-border">
+            <button
+              onClick={() => setPage(page - 1)}
+              disabled={page === 1}
+              className="px-3 py-1 text-sm bg-hl-panel rounded disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-sm text-hl-secondary">
+              Page {page} of {orderPages || 1} ({totalOrderRows} events)
+            </span>
+            <button
+              onClick={() => setPage(page + 1)}
+              disabled={page >= orderPages}
+              className="px-3 py-1 text-sm bg-hl-panel rounded disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
 
@@ -259,21 +327,22 @@ export default function TradesPage() {
 }
 
 function statusClass(status: string) {
-  switch (status) {
-    case 'FILLED':
+  if (!status) return 'stopped';
+  switch (status.toLowerCase()) {
     case 'filled':
       return 'filled';
-    case 'CANCELED':
     case 'canceled':
+    case 'cancelled':
       return 'canceled';
-    case 'REJECTED':
     case 'rejected':
       return 'rejected';
-    case 'OPEN':
     case 'open':
     case 'pending':
     case 'submitted':
+    case 'new':
       return 'open';
+    case 'skipped':
+      return 'stopped';
     default:
       return 'stopped';
   }
