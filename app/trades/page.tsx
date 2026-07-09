@@ -9,7 +9,7 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
 
 export default function TradesPage() {
-  const [tab, setTab] = useState<'fills' | 'orders'>('fills');
+  const [tab, setTab] = useState<'fills' | 'orders' | 'lifecycles'>('fills');
   const [timeRange, setTimeRange] = useState('ALL');
   const [page, setPage] = useState(1);
   const [paused, setPaused] = useState(false);
@@ -32,11 +32,21 @@ export default function TradesPage() {
     }
   );
 
+  const { data: lifecycleData } = useSWR(
+    `/api/trades-lifecycles?timeRange=${timeRange}`,
+    fetcher,
+    {
+      refreshInterval: paused ? 0 : 30000,
+      dedupingInterval: 10000,
+    }
+  );
+
   const fills = data?.data?.fills || [];
   const totals = data?.data?.totals;
   const totalFillRows = data?.data?.totalRows || 0;
   const orders = ordersData?.data?.orderEvents || [];
   const totalOrderRows = ordersData?.data?.totalRows || 0;
+  const lifecycles = lifecycleData?.data?.lifecycles || [];
   const asOf = data?.as_of_ts;
 
   const totalPages = Math.ceil(totalFillRows / 50);
@@ -90,7 +100,7 @@ export default function TradesPage() {
       <div className="flex items-center gap-4 mb-4">
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setTab('fills')}
+            onClick={() => { setTab('fills'); setPage(1); }}
             className={`px-3 py-1 text-sm rounded ${
               tab === 'fills'
                 ? 'bg-hl-accent text-hl-bg'
@@ -100,7 +110,7 @@ export default function TradesPage() {
             Fills
           </button>
           <button
-            onClick={() => setTab('orders')}
+            onClick={() => { setTab('orders'); setPage(1); }}
             className={`px-3 py-1 text-sm rounded ${
               tab === 'orders'
                 ? 'bg-hl-accent text-hl-bg'
@@ -108,6 +118,16 @@ export default function TradesPage() {
             }`}
           >
             Order Events
+          </button>
+          <button
+            onClick={() => { setTab('lifecycles'); setPage(1); }}
+            className={`px-3 py-1 text-sm rounded ${
+              tab === 'lifecycles'
+                ? 'bg-hl-accent text-hl-bg'
+                : 'bg-hl-panel text-hl-secondary'
+            }`}
+          >
+            Position PnL
           </button>
         </div>
 
@@ -316,6 +336,74 @@ export default function TradesPage() {
             >
               Next
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Position PnL tab */}
+      {tab === 'lifecycles' && !isLoading && (
+        <div className="panel overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full data-table">
+              <thead>
+                <tr>
+                  <th className="text-left">Symbol</th>
+                  <th className="text-left">Strategy</th>
+                  <th className="text-left">Side</th>
+                  <th className="text-left">Status</th>
+                  <th className="text-left">Open Time</th>
+                  <th className="text-left">Close Time</th>
+                  <th className="text-right">Buy Qty</th>
+                  <th className="text-right">Sell Qty</th>
+                  <th className="text-right">Buy Notional</th>
+                  <th className="text-right">Sell Notional</th>
+                  <th className="text-right">Gross PnL</th>
+                  <th className="text-right">Fees</th>
+                  <th className="text-right">Funding</th>
+                  <th className="text-right">Net PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lifecycles.length > 0 ? (
+                  lifecycles.map((l: any) => (
+                    <tr key={l.lifecycle_id}>
+                      <td className="font-medium">{l.symbol}</td>
+                      <td className="text-hl-secondary">{l.strategy_name || '--'}</td>
+                      <td>
+                        <span className={`badge-${l.side.toLowerCase()}`}>{l.side}</span>
+                      </td>
+                      <td>
+                        <span className={`badge-${l.status === 'OPEN' ? 'live' : 'stopped'}`}>
+                          {l.status}
+                        </span>
+                      </td>
+                      <td className="text-xs text-hl-muted">{formatTime(l.open_time)}</td>
+                      <td className="text-xs text-hl-muted">{l.close_time ? formatTime(l.close_time) : '--'}</td>
+                      <td className="font-num text-right">{formatQty(l.buy_qty)}</td>
+                      <td className="font-num text-right">{formatQty(l.sell_qty)}</td>
+                      <td className="font-num text-right">{formatUsd(l.buy_notional)}</td>
+                      <td className="font-num text-right">{formatUsd(l.sell_notional)}</td>
+                      <td className={`font-num text-right ${pnlClass(l.gross_trading_pnl)}`}>
+                        {formatPnl(l.gross_trading_pnl)}
+                      </td>
+                      <td className="font-num text-right">{formatUsd(l.total_fee)}</td>
+                      <td className={`font-num text-right ${l.total_funding >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                        {formatPnl(l.total_funding)}
+                      </td>
+                      <td className={`font-num text-right ${pnlClass(l.net_pnl)}`}>
+                        {formatPnl(l.net_pnl)}
+                      </td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={14} className="text-center text-hl-muted py-8">
+                      No position lifecycles in range
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

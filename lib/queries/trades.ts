@@ -80,51 +80,135 @@ export function timeRangeToTimestamps(range: string): { from_ts: string; to_ts: 
 }
 
 /**
- * Get paginated fills from fills table.
+ * Position Lifecycle with full PnL accounting.
+ * Groups fills by position cycle (open -> close).
  */
-export async function getFills(
+export interface PositionLifecycleRow {
+  lifecycle_id: string;
+  session_id: string | null;
+  strategy_name: string | null;
+  venue: string;
+  symbol: string;
+  side: string;
+  open_time: string;
+  close_time: string | null;
+  status: 'OPEN' | 'CLOSED';
+  buy_notional: number;
+  sell_notional: number;
+  gross_trading_pnl: number;
+  total_fee: number;
+  total_funding: number;
+  net_pnl: number;
+  buy_qty: number;
+  sell_qty: number;
+  avg_buy_price: number | null;
+  avg_sell_price: number | null;
+}
+
+/**
+ * Get position lifecycles with PnL accounting.
+ * Groups fills by session+symbol, treating each continuous holding as one lifecycle.
+ */
+export async function getPositionLifecycles(
   from_ts: string,
   to_ts: string,
   venue?: string,
   strategy?: string,
-  symbol?: string,
-  page = 1,
-  pageSize = 50
-): Promise<FillRow[]> {
-  const offset = (page - 1) * pageSize;
-
+  symbol?: string
+): Promise<PositionLifecycleRow[]> {
   const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
   const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
   const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
 
   const sql = `
+    WITH fills_with_session AS (
+      SELECT 
+        f.*,
+        sess.strategy_name
+      FROM fills f
+      LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
+      ${venueFilter}
+      ${strategyFilter}
+      ${symbolFilter}
+    ),
+    -- Aggregate by session+symbol
+    lifecycle_agg AS (
+      SELECT 
+        fws.session_id,
+        fws.strategy_name,
+        fws.venue,
+        fws.symbol,
+        -- Buy side totals
+        SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty * fws.fill_price ELSE 0 END) as buy_notional,
+        SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty ELSE 0 END) as buy_qty,
+        -- Sell side totals
+        SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty * fws.fill_price ELSE 0 END) as sell_notional,
+        SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty ELSE 0 END) as sell_qty,
+        -- Fees
+        SUM(COALESCE(fws.fee, 0)) as total_fee,
+        -- Timing
+        MIN(fws.ts) as open_time,
+        MAX(fws.ts) as close_time,
+        -- Average prices
+        CASE WHEN SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty ELSE 0 END) > 0
+          THEN SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty * fws.fill_price ELSE 0 END) / 
+               SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty ELSE 0 END)
+          ELSE NULL END as avg_buy_price,
+        CASE WHEN SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty ELSE 0 END) > 0
+          THEN SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty * fws.fill_price ELSE 0 END) / 
+               SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty ELSE 0 END)
+          ELSE NULL END as avg_sell_price
+      FROM fills_with_session fws
+      GROUP BY fws.session_id, fws.strategy_name, fws.venue, fws.symbol
+    ),
+    -- Get funding from funding_payments
+    funding_agg AS (
+      SELECT 
+        fp.session_id,
+        fp.symbol,
+        SUM(fp.payment_amount) as total_funding
+      FROM funding_payments fp
+      WHERE fp.ts >= '${from_ts}' AND fp.ts <= '${to_ts}'
+      GROUP BY fp.session_id, fp.symbol
+    )
     SELECT 
-      f.fill_id,
-      f.ts,
-      f.session_id,
-      f.venue,
-      f.symbol,
-      f.side,
-      f.fill_price,
-      f.fill_qty,
-      f.fee,
-      f.strategy_order_id,
-      f.broker_order_id,
-      f.is_maker,
-      f.realized_pnl,
-      sess.strategy_name,
-      ABS(f.fill_qty * f.fill_price) as notional
-    FROM fills f
-    LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
-    WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
-    ${venueFilter}
-    ${strategyFilter}
-    ${symbolFilter}
-    ORDER BY f.ts DESC
-    LIMIT ${pageSize} OFFSET ${offset}
+      MD5(la.session_id || la.symbol || la.open_time) as lifecycle_id,
+      la.session_id,
+      la.strategy_name,
+      la.venue,
+      la.symbol,
+      CASE WHEN la.buy_qty > la.sell_qty THEN 'LONG' ELSE 'SHORT' END as side,
+      la.open_time,
+      CASE WHEN la.buy_qty = la.sell_qty THEN la.close_time ELSE NULL END as close_time,
+      CASE WHEN la.buy_qty = la.sell_qty THEN 'CLOSED' ELSE 'OPEN' END as status,
+      la.buy_notional,
+      la.sell_notional,
+      -- Gross PnL: for LONG = sell_notional - (sell_qty/buy_qty) * buy_notional
+      CASE 
+        WHEN la.buy_qty > la.sell_qty THEN 
+          la.sell_notional - (la.sell_qty::numeric / NULLIF(la.buy_qty, 0)) * la.buy_notional
+        ELSE la.sell_notional - la.buy_notional
+      END as gross_trading_pnl,
+      la.total_fee,
+      COALESCE(fa.total_funding, 0) as total_funding,
+      -- Net PnL = gross_pnl + funding - fees
+      CASE 
+        WHEN la.buy_qty > la.sell_qty THEN 
+          la.sell_notional - (la.sell_qty::numeric / NULLIF(la.buy_qty, 0)) * la.buy_notional
+        ELSE la.sell_notional - la.buy_notional
+      END + COALESCE(fa.total_funding, 0) - la.total_fee as net_pnl,
+      la.buy_qty,
+      la.sell_qty,
+      la.avg_buy_price,
+      la.avg_sell_price
+    FROM lifecycle_agg la
+    LEFT JOIN funding_agg fa ON la.session_id = fa.session_id AND la.symbol = fa.symbol
+    ORDER BY la.open_time DESC
+    LIMIT 500
   `;
 
-  return query<FillRow>(sql);
+  return query<PositionLifecycleRow>(sql);
 }
 
 /**
