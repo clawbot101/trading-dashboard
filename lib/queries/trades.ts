@@ -321,7 +321,7 @@ export async function getPositionLifecycles(
       GROUP BY la.session_id, la.venue, la.symbol, la.lifecycle_seq
     )
     SELECT 
-      MD5(COALESCE(la.session_id, '') || '|' || la.symbol || '|' || la.lifecycle_seq::text) as lifecycle_id,
+      MD5(COALESCE(la.session_id::text, '') || '|' || la.symbol || '|' || la.lifecycle_seq::text) as lifecycle_id,
       la.session_id,
       la.strategy_name,
       la.venue,

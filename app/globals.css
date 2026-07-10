@@ -114,7 +114,8 @@
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 700;
+    border: 1px solid rgba(38, 166, 154, 0.45);
   }
   
   .badge-short {
@@ -123,7 +124,26 @@
     padding: 2px 8px;
     border-radius: 4px;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 700;
+    border: 1px solid rgba(239, 83, 80, 0.45);
+  }
+
+  .side-long {
+    display: inline-block;
+    color: var(--profit);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  .side-short {
+    display: inline-block;
+    color: var(--loss);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
   
   .badge-buy {

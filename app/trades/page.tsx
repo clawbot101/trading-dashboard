@@ -308,7 +308,7 @@ export default function TradesPage() {
                     <td className="text-sm">{row.strategy_name || '--'}</td>
                     <td className={`venue-${venueClass(row.venue)}`}>{venueLabel(row.venue)}</td>
                     <td className="font-medium">{row.symbol}</td>
-                    <td><span className={`badge-${(row.side || '').toLowerCase()}`}>{row.side || '--'}</span></td>
+                    <td><span className={sideClass(row.side)}>{row.side || '--'}</span></td>
                     <td><span className={`badge-${row.status === 'CLOSED' ? 'filled' : 'open'}`}>{row.status}</span></td>
                     <td className="font-num text-right">{formatPrice(row.side === 'LONG' ? row.avg_buy_price : row.avg_sell_price)}</td>
                     <td className="font-num text-right">{formatPrice(row.side === 'LONG' ? row.avg_sell_price : row.avg_buy_price)}</td>
@@ -494,6 +494,13 @@ function venueClass(venue: string | null | undefined) {
 function venueLabel(venue: string | null | undefined) {
   const v = (venue || '').toLowerCase();
   return v.includes('hyperliquid') ? 'HL' : 'LT';
+}
+
+function sideClass(side: string | null | undefined) {
+  const s = (side || '').toLowerCase();
+  if (s === 'long') return 'side-long';
+  if (s === 'short') return 'side-short';
+  return 'badge-stopped';
 }
 
 function pnlClass(n: number | null) {

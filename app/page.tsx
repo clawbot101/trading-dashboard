@@ -5,7 +5,6 @@ import Link from 'next/link';
 import { useState, useMemo } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
-import PnlAttributionChart from '../components/PnlAttributionChart';
 
 const fetcher = async (url: string) => {
   const r = await fetch(url);
@@ -37,7 +36,6 @@ export default function OverviewPage() {
   const equityCurve = data?.data?.equityCurve || [];
   const strategies = data?.data?.strategyLeaderboard || [];
   const venueSplit = data?.data?.venueSplit || [];
-  const pnlAttribution = data?.data?.pnlAttribution || [];
   const recentFills = data?.data?.recentFills || [];
   const asOf = data?.as_of_ts;
 
@@ -223,45 +221,30 @@ export default function OverviewPage() {
         </div>
       </div>
 
-      {/* Bottom row: PnL attribution + recent fills */}
-      <div className="grid grid-cols-2 gap-4">
-        {/* PnL attribution */}
-        <div className="panel p-4">
-          <div className="text-xs text-hl-secondary mb-2">PnL Attribution (Daily)</div>
-          {pnlAttribution.length > 0 ? (
-            <PnlAttributionChart data={pnlAttribution} />
-          ) : (
-            <div className="h-48 bg-hl-hover rounded flex items-center justify-center text-hl-muted">
-              No attribution data
-            </div>
-          )}
-        </div>
-
-        {/* Recent fills */}
-        <div className="panel p-4">
-          <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
-          <div className="space-y-1">
-            {recentFills.length > 0 ? (
-              recentFills.slice(0, 10).map((f: any) => (
-                <div
-                  key={`${f.ts}-${f.symbol}`}
-                  className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="text-hl-muted">{formatTimeAgo(f.ts)}</span>
-                    <span className="font-medium">{f.strategy_name}</span>
-                    <span className={`badge-${f.side.toLowerCase()}`}>{f.side}</span>
-                    <span>{f.symbol}</span>
-                  </div>
-                  <div className="font-num">
-                    {f.fill_qty}@{formatPrice(f.fill_price, 2)}
-                  </div>
+      {/* Bottom row: recent fills */}
+      <div className="panel p-4">
+        <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
+        <div className="space-y-1">
+          {recentFills.length > 0 ? (
+            recentFills.slice(0, 10).map((f: any) => (
+              <div
+                key={`${f.ts}-${f.symbol}`}
+                className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-hl-muted">{formatTimeAgo(f.ts)}</span>
+                  <span className="font-medium">{f.strategy_name}</span>
+                  <span className={`badge-${f.side.toLowerCase()}`}>{f.side}</span>
+                  <span>{f.symbol}</span>
                 </div>
-              ))
-            ) : (
-              <div className="text-hl-muted text-sm py-4">No recent fills</div>
-            )}
-          </div>
+                <div className="font-num">
+                  {f.fill_qty}@{formatPrice(f.fill_price, 2)}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="text-hl-muted text-sm py-4">No recent fills</div>
+          )}
         </div>
       </div>
 

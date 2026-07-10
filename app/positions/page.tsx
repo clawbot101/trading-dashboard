@@ -193,14 +193,14 @@ function PositionRow({
     <>
       <tr className="cursor-pointer" onClick={onToggle}>
         <td className="font-medium">
-          <span className={`venue-${position.venue === 'Hyperliquid' ? 'hl' : 'lt'}`}>
-            {position.venue === 'Hyperliquid' ? 'HL' : 'LT'}
+          <span className={`venue-${venueClass(position.venue)}`}>
+            {venueLabel(position.venue)}
           </span>
           <span className="ml-2">{position.symbol}</span>
         </td>
         <td className="text-hl-secondary">{position.strategy_name}</td>
         <td>
-          <span className={`badge-${position.side.toLowerCase()}`}>{position.side}</span>
+          <span className={sideClass(position.side)}>{position.side}</span>
         </td>
         <td className="font-num text-right">{formatQty(Math.abs(position.position_qty))}</td>
         <td className="font-num text-right">{formatUsd(position.notional)}</td>
@@ -324,14 +324,14 @@ function PositionRow({
 
 // Formatting helpers
 function formatUsd(n: number | null) {
-  if (!n) return '--';
+  if (n == null) return '--';
   if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
   if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
   return `$${n.toFixed(2)}`;
 }
 
 function formatPnl(n: number | null) {
-  if (!n) return '--';
+  if (n == null) return '--';
   const sign = n >= 0 ? '+' : '';
   if (Math.abs(n) >= 1e6) return `$${sign}${(n / 1e6).toFixed(2)}M`;
   if (Math.abs(n) >= 1e3) return `$${sign}${(n / 1e3).toFixed(2)}K`;
@@ -345,7 +345,7 @@ function formatQty(n: number) {
 }
 
 function formatPrice(n: number | null) {
-  if (!n) return '--';
+  if (n == null) return '--';
   return n.toFixed(4);
 }
 
@@ -367,4 +367,21 @@ function pnlClass(n: number) {
   if (n > 0) return 'pnl-positive';
   if (n < 0) return 'pnl-negative';
   return '';
+}
+
+function venueClass(venue: string | null | undefined) {
+  const v = (venue || '').toLowerCase();
+  return v.includes('hyperliquid') ? 'hl' : 'lt';
+}
+
+function venueLabel(venue: string | null | undefined) {
+  const v = (venue || '').toLowerCase();
+  return v.includes('hyperliquid') ? 'HL' : 'LT';
+}
+
+function sideClass(side: string | null | undefined) {
+  const s = (side || '').toLowerCase();
+  if (s === 'long') return 'side-long';
+  if (s === 'short') return 'side-short';
+  return 'badge-stopped';
 }
