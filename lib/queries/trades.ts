@@ -257,7 +257,7 @@ export async function getPositionLifecycles(
     ),
     lifecycle_agg AS (
       SELECT 
-        MIN(lt.session_id) as session_id,
+        MIN(lt.session_id::text) as session_id,
         lt.strategy_name,
         lt.venue,
         lt.symbol,
