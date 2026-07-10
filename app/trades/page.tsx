@@ -284,8 +284,8 @@ export default function TradesPage() {
           <table className="w-full data-table">
             <thead>
               <tr>
-                <th className="text-left">Open Time</th>
-                <th className="text-left">Close Time</th>
+                <th className="text-left">Start Time</th>
+                <th className="text-left">End Time</th>
                 <th className="text-left">Strategy</th>
                 <th className="text-left">Venue</th>
                 <th className="text-left">Symbol</th>
