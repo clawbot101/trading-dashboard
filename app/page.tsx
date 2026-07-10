@@ -7,7 +7,14 @@ import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
 import PnlAttributionChart from '../components/PnlAttributionChart';
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  const payload = await r.json();
+  if (!r.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `Request failed (${r.status})`);
+  }
+  return payload;
+};
 
 // Time range options
 const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
@@ -110,7 +117,7 @@ export default function OverviewPage() {
         <div className="grid grid-cols-6 gap-3 mb-6">
           <StatCard label="Total Equity" value={formatUsd(stats.total_equity)} />
           <StatCard
-            label="24h PnL"
+            label={`${timeRange} PnL`}
             value={formatPnl(stats.pnl_24h)}
             delta={formatPct(stats.pnl_24h_pct)}
             pnl
@@ -304,14 +311,14 @@ function StatCard({
 
 // Formatting helpers
 function formatUsd(n: number | null) {
-  if (!n) return '$--';
+  if (n == null) return '$--';
   if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
   if (Math.abs(n) >= 1e3) return `$${(n / 1e3).toFixed(2)}K`;
   return `$${n.toFixed(2)}`;
 }
 
 function formatPnl(n: number | null) {
-  if (!n) return '$--';
+  if (n == null) return '$--';
   const sign = n >= 0 ? '+' : '';
   if (Math.abs(n) >= 1e6) return `$${sign}${(n / 1e6).toFixed(2)}M`;
   if (Math.abs(n) >= 1e3) return `$${sign}${(n / 1e3).toFixed(2)}K`;
@@ -319,7 +326,7 @@ function formatPnl(n: number | null) {
 }
 
 function formatPct(n: number | null) {
-  if (!n) return '--';
+  if (n == null) return '--';
   const sign = n >= 0 ? '+' : '';
   return `${sign}${n.toFixed(2)}%`;
 }

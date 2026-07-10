@@ -1,9 +1,13 @@
 /**
  * SQL queries for the Overview page.
- * Fixed for actual production schema.
+ *
+ * PnL rules:
+ * - Top-level net PnL is always computed from equity snapshots:
+ *   net_pnl(t0, t1) = equity(t1) - equity(t0)
+ * - Funding is treated as cumulative snapshots, so period funding uses deltas.
  */
 
-import { query, queryOne, db } from '../db';
+import { query, queryOne } from '../db';
 
 export interface OverviewStats {
   total_equity: number;
@@ -50,6 +54,47 @@ export interface RecentFill {
   fee: number | null;
 }
 
+interface QueryFilters {
+  venue?: string;
+  strategies?: string[];
+}
+
+function isAllValue(value?: string): boolean {
+  return !value || value.toLowerCase() === 'all';
+}
+
+function normalizeStrategies(strategies?: string[]): string[] | undefined {
+  if (!strategies?.length) return undefined;
+  const cleaned = strategies
+    .map((s) => s?.trim())
+    .filter((s): s is string => Boolean(s) && s.toLowerCase() !== 'all');
+  return cleaned.length ? cleaned : undefined;
+}
+
+function buildFilters(
+  startIndex: number,
+  options: QueryFilters,
+  withSessionJoin: boolean,
+  tableAlias: string
+): { clauses: string[]; params: unknown[] } {
+  const params: unknown[] = [];
+  const clauses: string[] = [];
+  let idx = startIndex;
+
+  if (!isAllValue(options.venue)) {
+    clauses.push(`${tableAlias}.venue = $${idx++}`);
+    params.push(options.venue);
+  }
+
+  const strategies = normalizeStrategies(options.strategies);
+  if (withSessionJoin && strategies?.length) {
+    clauses.push(`sess.strategy_name = ANY($${idx++}::text[])`);
+    params.push(strategies);
+  }
+
+  return { clauses, params };
+}
+
 export function timeRangeToInterval(range: string): string {
   switch (range) {
     case '24H': return '24 hours';
@@ -92,7 +137,7 @@ export function timeRangeToTimestamps(range: string): { from_ts: string; to_ts: 
 
 /**
  * Get overview stats from equity_snapshots (source of truth for Net PnL).
- * Net PnL = equity(now) - equity(24h ago)
+ * Net PnL = equity(t1) - equity(t0)
  */
 export async function getOverviewStats(
   timeRange = '24H',
@@ -100,49 +145,110 @@ export async function getOverviewStats(
   strategies?: string[]
 ): Promise<OverviewStats | null> {
   const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
+  const options: QueryFilters = { venue, strategies };
 
-  // Latest equity from snapshots (source of truth)
-  const latestRow = await queryOne<any>(`
-    SELECT SUM(equity) as equity FROM equity_snapshots
-    WHERE ts = (SELECT MAX(ts) FROM equity_snapshots WHERE ts <= '${to_ts}')
-  `);
+  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
 
-  // Equity 24h ago for PnL calculation
-  const equity24hRow = await queryOne<any>(`
-    SELECT SUM(equity) as equity FROM equity_snapshots
-    WHERE ts <= NOW() - INTERVAL '24 hours'
-    ORDER BY ts DESC
-    LIMIT 1
-  `);
+  // Top-level net PnL strictly from equity snapshots:
+  // net_pnl(t0, t1) = equity(t1) - equity(t0)
+  const equityRow = await queryOne<any>(
+    `
+      WITH filtered_equity AS (
+        SELECT e.ts, e.equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqWhere}
+      ),
+      equity_by_ts AS (
+        SELECT ts, SUM(equity) AS total_equity
+        FROM filtered_equity
+        GROUP BY ts
+      ),
+      latest_point AS (
+        SELECT ts, total_equity
+        FROM equity_by_ts
+        WHERE ts <= $1
+        ORDER BY ts DESC
+        LIMIT 1
+      ),
+      baseline_point AS (
+        SELECT ts, total_equity
+        FROM equity_by_ts
+        WHERE ts <= $2
+        ORDER BY ts DESC
+        LIMIT 1
+      ),
+      first_point AS (
+        SELECT ts, total_equity
+        FROM equity_by_ts
+        ORDER BY ts ASC
+        LIMIT 1
+      )
+      SELECT
+        COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
+        COALESCE(
+          (SELECT total_equity FROM baseline_point),
+          (SELECT total_equity FROM first_point),
+          COALESCE((SELECT total_equity FROM latest_point), 0)
+        ) AS equity_period_ago
+    `,
+    [to_ts, from_ts, ...eqFilters.params]
+  );
 
-  // Stats from trading_state for positions
-  const stateRow = await queryOne<any>(`
-    SELECT
-      COALESCE(SUM(unrealized_pnl), 0) as total_unrealized_pnl,
-      COALESCE(SUM(realized_pnl), 0) as total_realized_pnl,
-      COUNT(CASE WHEN position_qty != 0 THEN 1 END) as open_positions,
-      COALESCE(SUM(COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0)))), 0) as gross_exposure
-    FROM trading_state
-    WHERE position_qty != 0
-  `);
+  const stateFilters = buildFilters(1, options, false, 'ts');
+  const stateWhereExtra = stateFilters.clauses.length ? `AND ${stateFilters.clauses.join(' AND ')}` : '';
+  const strategiesFilter = normalizeStrategies(strategies);
+  const strategyClause = strategiesFilter?.length
+    ? `AND ts.strategy_name = ANY($${stateFilters.params.length + 1}::text[])`
+    : '';
+  const stateParams = strategiesFilter?.length
+    ? [...stateFilters.params, strategiesFilter]
+    : stateFilters.params;
 
-  const equityNow = latestRow?.equity || 0;
-  const equity24hAgo = equity24hRow?.equity || equityNow;
-  const pnl24h = equityNow - equity24hAgo;
-  const pnl24hPct = equity24hAgo > 0 ? (pnl24h / equity24hAgo) * 100 : 0;
+  const stateRow = await queryOne<any>(
+    `
+      SELECT
+        COALESCE(SUM(ts.unrealized_pnl), 0) AS total_unrealized_pnl,
+        COALESCE(SUM(ts.realized_pnl), 0) AS total_realized_pnl,
+        COALESCE(SUM(ts.margin), 0) AS total_margin,
+        COUNT(*) FILTER (WHERE ts.position_qty != 0) AS open_positions,
+        COALESCE(
+          SUM(
+            CASE
+              WHEN ts.position_qty != 0 THEN COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))
+              ELSE 0
+            END
+          ),
+          0
+        ) AS gross_exposure
+      FROM trading_state ts
+      WHERE 1=1
+      ${stateWhereExtra}
+      ${strategyClause}
+    `,
+    stateParams
+  );
+
+  const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
+
+  const equityNow = Number(equityRow?.total_equity ?? 0);
+  const equityPeriodAgo = Number(equityRow?.equity_period_ago ?? equityNow);
+  const pnlPeriod = equityNow - equityPeriodAgo;
+  const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
 
   return {
     total_equity: equityNow,
-    pnl_24h: pnl24h,
-    pnl_24h_pct: pnl24hPct,
-    total_unrealized_pnl: stateRow?.total_unrealized_pnl || 0,
-    total_realized_pnl: stateRow?.total_realized_pnl || 0,
-    total_funding: 0,
-    total_margin: 0,
+    pnl_24h: pnlPeriod,
+    pnl_24h_pct: pnlPeriodPct,
+    total_unrealized_pnl: Number(stateRow?.total_unrealized_pnl ?? 0),
+    total_realized_pnl: Number(stateRow?.total_realized_pnl ?? 0),
+    total_funding: fundingDelta,
+    total_margin: Number(stateRow?.total_margin ?? 0),
     max_drawdown_pct: 0,
-    open_positions: stateRow?.open_positions || 0,
-    gross_exposure: stateRow?.gross_exposure || 0,
-    equity_24h_ago: equity24hAgo,
+    open_positions: Number(stateRow?.open_positions ?? 0),
+    gross_exposure: Number(stateRow?.gross_exposure ?? 0),
+    equity_24h_ago: equityPeriodAgo,
   };
 }
 
@@ -154,20 +260,48 @@ export async function getEquityCurve(
   venue?: string,
   strategies?: string[]
 ): Promise<EquityCurvePoint[]> {
-  const interval = timeRangeToInterval(timeRange);
+  const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
+  const options: QueryFilters = { venue, strategies };
+  const eqFilters = buildFilters(3, options, true, 'e');
+  const clauses = [...eqFilters.clauses, 'e.ts >= $2', 'e.ts <= $1'];
+  const where = `WHERE ${clauses.join(' AND ')}`;
 
-  const sql = `
-    SELECT 
-      ts,
-      SUM(equity) as equity
-    FROM equity_snapshots
-    WHERE ts > NOW() - INTERVAL '${interval}'
-    GROUP BY ts
-    ORDER BY ts ASC
-    LIMIT 500
-  `;
+  const rows = await query<EquityCurvePoint>(
+    `
+      WITH filtered_equity AS (
+        SELECT e.ts, e.equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${where}
+      )
+      SELECT ts, SUM(equity) AS equity
+      FROM filtered_equity
+      GROUP BY ts
+      ORDER BY ts ASC
+      LIMIT 500
+    `,
+    [to_ts, from_ts, ...eqFilters.params]
+  );
 
-  return query<EquityCurvePoint>(sql);
+  if (rows.length > 0 || timeRange === 'ALL') return rows;
+
+  // Fallback for stale data: show the latest points even if outside requested range.
+  return query<EquityCurvePoint>(
+    `
+      WITH filtered_equity AS (
+        SELECT e.ts, e.equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
+      )
+      SELECT ts, SUM(equity) AS equity
+      FROM filtered_equity
+      GROUP BY ts
+      ORDER BY ts DESC
+      LIMIT 500
+    `,
+    eqFilters.params
+  ).then((latestRows) => latestRows.reverse());
 }
 
 /**
@@ -177,21 +311,73 @@ export async function getStrategyLeaderboard(
   timeRange = '24H',
   venue?: string
 ): Promise<StrategyLeaderboardRow[]> {
-  const sql = `
-    SELECT 
-      ts.strategy_name,
-      'running' as status,
-      COALESCE(SUM(ts.realized_pnl + ts.unrealized_pnl), 0) as pnl,
-      COALESCE(SUM(ts.equity), 0) as latest_equity,
-      COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) as notional
-    FROM trading_state ts
-    WHERE ts.position_qty != 0
-    GROUP BY ts.strategy_name
-    ORDER BY pnl DESC
-    LIMIT 10
-  `;
+  const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
+  const options: QueryFilters = { venue };
+  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
 
-  const rows = await query<any>(sql);
+  const rows = await query<any>(
+    `
+      WITH filtered_equity AS (
+        SELECT
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          e.ts,
+          e.equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqWhere}
+      ),
+      strategy_equity AS (
+        SELECT strategy_name, ts, SUM(equity) AS total_equity
+        FROM filtered_equity
+        GROUP BY strategy_name, ts
+      ),
+      latest AS (
+        SELECT DISTINCT ON (strategy_name)
+          strategy_name,
+          total_equity AS latest_equity
+        FROM strategy_equity
+        WHERE ts <= $1
+        ORDER BY strategy_name, ts DESC
+      ),
+      baseline AS (
+        SELECT DISTINCT ON (strategy_name)
+          strategy_name,
+          total_equity AS baseline_equity
+        FROM strategy_equity
+        WHERE ts <= $2
+        ORDER BY strategy_name, ts DESC
+      ),
+      first_equity AS (
+        SELECT DISTINCT ON (strategy_name)
+          strategy_name,
+          total_equity AS first_equity
+        FROM strategy_equity
+        ORDER BY strategy_name, ts ASC
+      ),
+      state_notional AS (
+        SELECT
+          ts.strategy_name,
+          COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) AS notional
+        FROM trading_state ts
+        WHERE ts.position_qty != 0
+        GROUP BY ts.strategy_name
+      )
+      SELECT
+        l.strategy_name,
+        'running' AS status,
+        (l.latest_equity - COALESCE(b.baseline_equity, f.first_equity, l.latest_equity)) AS pnl,
+        l.latest_equity,
+        COALESCE(n.notional, 0) AS notional
+      FROM latest l
+      LEFT JOIN baseline b ON b.strategy_name = l.strategy_name
+      LEFT JOIN first_equity f ON f.strategy_name = l.strategy_name
+      LEFT JOIN state_notional n ON n.strategy_name = l.strategy_name
+      ORDER BY pnl DESC
+      LIMIT 10
+    `,
+    [to_ts, from_ts, ...eqFilters.params]
+  );
 
   return rows.map(r => ({
     strategy_name: r.strategy_name,
@@ -207,18 +393,39 @@ export async function getStrategyLeaderboard(
  * Venue split.
  */
 export async function getVenueSplit(): Promise<VenueSplitRow[]> {
-  const sql = `
-    SELECT 
-      venue,
-      SUM(equity) as equity,
-      SUM(realized_pnl + unrealized_pnl) as pnl
-    FROM trading_state
-    WHERE position_qty != 0
-    GROUP BY venue
-    ORDER BY venue
-  `;
+  const rows = await query<VenueSplitRow>(
+    `
+      WITH venue_equity AS (
+        SELECT venue, ts, SUM(equity) AS total_equity
+        FROM equity_snapshots
+        GROUP BY venue, ts
+      ),
+      latest AS (
+        SELECT DISTINCT ON (venue) venue, total_equity
+        FROM venue_equity
+        ORDER BY venue, ts DESC
+      ),
+      prior AS (
+        SELECT DISTINCT ON (venue) venue, total_equity
+        FROM venue_equity
+        WHERE ts <= NOW() - INTERVAL '24 hours'
+        ORDER BY venue, ts DESC
+      )
+      SELECT
+        l.venue,
+        l.total_equity AS equity,
+        (l.total_equity - COALESCE(p.total_equity, l.total_equity)) AS pnl
+      FROM latest l
+      LEFT JOIN prior p USING (venue)
+      ORDER BY l.venue
+    `
+  );
 
-  return query<VenueSplitRow>(sql);
+  return rows.map((row) => ({
+    venue: row.venue,
+    equity: Number((row as any).equity ?? 0),
+    pnl: Number((row as any).pnl ?? 0),
+  }));
 }
 
 /**
@@ -252,58 +459,165 @@ export async function getPnlAttribution(
   venue?: string,
   strategies?: string[]
 ): Promise<any[]> {
-  const interval = timeRangeToInterval(timeRange);
+  const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
+  const options: QueryFilters = { venue, strategies };
 
-  // Get daily equity changes (price PnL)
-  const equityByDay = await query<any>(`
-    SELECT 
-      DATE(ts) as date,
-      SUM(equity) as daily_equity
-    FROM equity_snapshots
-    WHERE ts > NOW() - INTERVAL '${interval}'
-    GROUP BY DATE(ts)
-    ORDER BY DATE(ts) ASC
-    LIMIT 30
-  `);
+  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqWhere = [...eqFilters.clauses, 'e.ts >= $2', 'e.ts <= $1'];
+  const eqWhereSql = `WHERE ${eqWhere.join(' AND ')}`;
+  const eqRows = await query<any>(
+    `
+      WITH filtered_equity AS (
+        SELECT e.ts, e.equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqWhereSql}
+      ),
+      equity_by_ts AS (
+        SELECT ts, SUM(equity) AS total_equity
+        FROM filtered_equity
+        GROUP BY ts
+      ),
+      daily_close AS (
+        SELECT
+          DATE(ts) AS date,
+          (ARRAY_AGG(total_equity ORDER BY ts DESC))[1] AS close_equity
+        FROM equity_by_ts
+        GROUP BY DATE(ts)
+      )
+      SELECT
+        date,
+        close_equity,
+        close_equity - LAG(close_equity) OVER (ORDER BY date) AS daily_net_pnl
+      FROM daily_close
+      ORDER BY date ASC
+    `,
+    [to_ts, from_ts, ...eqFilters.params]
+  );
 
-  // Get daily fees from fills
-  const feesByDay = await query<any>(`
-    SELECT 
-      DATE(ts) as date,
-      SUM(ABS(COALESCE(fee, 0))) as daily_fees
-    FROM fills
-    WHERE ts > NOW() - INTERVAL '${interval}'
-    GROUP BY DATE(ts)
-  `);
+  const fillsFilters = buildFilters(3, options, true, 'f');
+  const fillsWhere = [...fillsFilters.clauses, 'f.ts >= $2', 'f.ts <= $1'];
+  const feesRows = await query<any>(
+    `
+      SELECT
+        DATE(f.ts) AS date,
+        SUM(ABS(COALESCE(f.fee, 0))) AS daily_fees
+      FROM fills f
+      LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      WHERE ${fillsWhere.join(' AND ')}
+      GROUP BY DATE(f.ts)
+    `,
+    [to_ts, from_ts, ...fillsFilters.params]
+  );
 
-  // Get daily funding from funding_payments
-  const fundingByDay = await query<any>(`
-    SELECT 
-      DATE(ts) as date,
-      SUM(COALESCE(payment_amount, 0)) as daily_funding
-    FROM funding_payments
-    WHERE ts > NOW() - INTERVAL '${interval}'
-    GROUP BY DATE(ts)
-  `);
+  const fundingRows = await getFundingDeltasByDay(from_ts, to_ts, venue, strategies);
+  const fundingMap = new Map<string, number>(
+    fundingRows.map((r) => [new Date(r.date).toISOString().slice(0, 10), Number(r.daily_funding_delta ?? 0)])
+  );
+  const feesMap = new Map<string, number>(
+    feesRows.map((r) => [new Date(r.date).toISOString().slice(0, 10), Number(r.daily_fees ?? 0)])
+  );
 
-  // Merge all data
-  const feesMap = new Map(feesByDay.map(f => [f.date, f.daily_fees]));
-  const fundingMap = new Map(fundingByDay.map(f => [f.date, f.daily_funding]));
+  return eqRows
+    .map((row) => {
+      const dateKey = new Date(row.date).toISOString().slice(0, 10);
+      const net = Number(row.daily_net_pnl ?? 0);
+      const fees = Number(feesMap.get(dateKey) ?? 0);
+      const funding = Number(fundingMap.get(dateKey) ?? 0);
 
-  // Compute daily price PnL (change in equity from previous day)
-  const result = equityByDay.map((row, i) => {
-    const prevEquity = i > 0 ? equityByDay[i - 1]?.daily_equity || row.daily_equity : row.daily_equity;
-    const pricePnl = row.daily_equity - prevEquity;
-    const fees = feesMap.get(row.date) || 0;
-    const funding = fundingMap.get(row.date) || 0;
+      // net = trading + funding - fees  => trading = net - funding + fees
+      const pricePnl = net - funding + fees;
 
-    return {
-      date: row.date,
-      price_pnl: pricePnl,
-      fees: -fees, // fees are negative (cost)
-      funding: funding,
-    };
-  });
+      return {
+        date: dateKey,
+        price_pnl: pricePnl,
+        fees: -fees,
+        funding,
+      };
+    })
+    .filter((row) => !Number.isNaN(row.price_pnl))
+    .slice(-60);
+}
 
-  return result;
+async function getFundingDelta(
+  fromTs: string,
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<number> {
+  const options: QueryFilters = { venue, strategies };
+  const filters = buildFilters(3, options, true, 'f');
+  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+
+  const row = await queryOne<{ funding_delta: number }>(
+    `
+      WITH funding_with_lag AS (
+        SELECT
+          f.ts,
+          f.session_id,
+          f.venue,
+          f.symbol,
+          COALESCE(f.payment_amount, 0) AS payment_amount,
+          LAG(COALESCE(f.payment_amount, 0)) OVER (
+            PARTITION BY f.session_id, f.venue, f.symbol
+            ORDER BY f.ts
+          ) AS prev_payment
+        FROM funding_payments f
+        LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+        WHERE f.ts <= $1
+        ${whereSql}
+      )
+      SELECT
+        COALESCE(
+          SUM(
+            CASE
+              WHEN ts < $2 THEN 0
+              ELSE COALESCE(payment_amount, 0) - COALESCE(prev_payment, 0)
+            END
+          ),
+          0
+        ) AS funding_delta
+      FROM funding_with_lag
+    `,
+    [toTs, fromTs, ...filters.params]
+  );
+
+  return Number(row?.funding_delta ?? 0);
+}
+
+async function getFundingDeltasByDay(
+  fromTs: string,
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<Array<{ date: string; daily_funding_delta: number }>> {
+  const options: QueryFilters = { venue, strategies };
+  const filters = buildFilters(3, options, true, 'f');
+  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+
+  return query<{ date: string; daily_funding_delta: number }>(
+    `
+      WITH funding_with_lag AS (
+        SELECT
+          f.ts,
+          COALESCE(f.payment_amount, 0) AS payment_amount,
+          LAG(COALESCE(f.payment_amount, 0)) OVER (
+            PARTITION BY f.session_id, f.venue, f.symbol
+            ORDER BY f.ts
+          ) AS prev_payment
+        FROM funding_payments f
+        LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+        WHERE f.ts <= $1
+        ${whereSql}
+      )
+      SELECT
+        DATE(ts) AS date,
+        SUM(COALESCE(payment_amount, 0) - COALESCE(prev_payment, 0)) AS daily_funding_delta
+      FROM funding_with_lag
+      WHERE ts >= $2
+      GROUP BY DATE(ts)
+      ORDER BY DATE(ts) ASC
+    `,
+    [toTs, fromTs, ...filters.params]
+  );
 }
