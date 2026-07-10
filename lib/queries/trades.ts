@@ -17,7 +17,6 @@ export interface FillRow {
   strategy_order_id: string | null;
   broker_order_id: string | null;
   notional: number;
-  is_maker: boolean | null;
   realized_pnl: number | null;
 }
 
@@ -110,7 +109,6 @@ export async function getFills(
       f.fee,
       f.strategy_order_id,
       f.broker_order_id,
-      f.is_maker,
       f.realized_pnl,
       sess.strategy_name,
       ABS(f.fill_qty * f.fill_price) as notional

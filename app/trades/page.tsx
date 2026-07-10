@@ -153,7 +153,6 @@ export default function TradesPage() {
                 <th className="text-right">Qty</th>
                 <th className="text-right">Notional</th>
                 <th className="text-right">Fee</th>
-                <th className="text-left">Maker</th>
                 <th className="text-right">rPnL</th>
               </tr>
             </thead>
@@ -172,7 +171,6 @@ export default function TradesPage() {
                     <td className="font-num text-right">{formatQty(f.fill_qty)}</td>
                     <td className="font-num text-right">{formatUsd(f.notional)}</td>
                     <td className="font-num text-right">{formatUsd(f.fee)}</td>
-                    <td className="text-xs">{f.is_maker ? 'M' : 'T'}</td>
                     <td className={`font-num text-right ${pnlClass(f.realized_pnl)}`}>
                       {formatPnl(f.realized_pnl)}
                     </td>
