@@ -9,8 +9,8 @@ import {
   getEquityCurve,
   getStrategyLeaderboard,
   getVenueSplit,
-  getPnlAttribution,
   getRecentFills,
+  getLatestRebalanceStatus,
 } from '../../../lib/queries/overview';
 
 export const runtime = "nodejs";
@@ -35,8 +35,8 @@ export async function GET(req: NextRequest) {
     const equityCurve = await getEquityCurve(timeRange, venue, strategy ? [strategy] : undefined);
     const strategyLeaderboard = await getStrategyLeaderboard(timeRange, venue);
     const venueSplit = await getVenueSplit();
-    const pnlAttribution = await getPnlAttribution(timeRange, venue, strategy ? [strategy] : undefined);
     const recentFills = await getRecentFills(20);
+    const rebalanceStatus = await getLatestRebalanceStatus();
 
     return NextResponse.json({
       ok: true,
@@ -46,8 +46,8 @@ export async function GET(req: NextRequest) {
         equityCurve,
         strategyLeaderboard,
         venueSplit,
-        pnlAttribution,
         recentFills,
+        rebalanceStatus,
       },
       as_of_ts: new Date().toISOString(),
     });

@@ -54,6 +54,13 @@ export interface RecentFill {
   fee: number | null;
 }
 
+export interface RebalanceStatus {
+  rebalance_ts: string;
+  window_end_ts: string;
+  fill_count: number;
+  same_position: boolean;
+}
+
 interface QueryFilters {
   venue?: string;
   strategies?: string[];
@@ -449,6 +456,50 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
   `;
 
   return query<RecentFill>(sql, [limit]);
+}
+
+/**
+ * Returns most recent completed UTC 00:00 rebalance window status.
+ * If the window has zero fills, we treat it as "same position".
+ */
+export async function getLatestRebalanceStatus(windowMinutes = 90): Promise<RebalanceStatus> {
+  const now = new Date();
+
+  const todayUtcMidnight = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    0,
+    0,
+    0,
+    0
+  ));
+
+  // Only mark a rebalance window once it has had enough time to complete.
+  const currentWindowEnd = new Date(todayUtcMidnight.getTime() + windowMinutes * 60 * 1000);
+  const useToday = now >= currentWindowEnd;
+  const rebalanceTs = useToday
+    ? todayUtcMidnight
+    : new Date(todayUtcMidnight.getTime() - 24 * 60 * 60 * 1000);
+  const windowEndTs = new Date(rebalanceTs.getTime() + windowMinutes * 60 * 1000);
+
+  const row = await queryOne<{ fill_count: number }>(
+    `
+      SELECT COUNT(*)::int AS fill_count
+      FROM fills
+      WHERE ts >= $1
+        AND ts < $2
+    `,
+    [rebalanceTs.toISOString(), windowEndTs.toISOString()]
+  );
+
+  const fillCount = Number(row?.fill_count ?? 0);
+  return {
+    rebalance_ts: rebalanceTs.toISOString(),
+    window_end_ts: windowEndTs.toISOString(),
+    fill_count: fillCount,
+    same_position: fillCount === 0,
+  };
 }
 
 /**

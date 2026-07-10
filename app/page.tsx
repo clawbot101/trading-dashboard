@@ -37,6 +37,7 @@ export default function OverviewPage() {
   const strategies = data?.data?.strategyLeaderboard || [];
   const venueSplit = data?.data?.venueSplit || [];
   const recentFills = data?.data?.recentFills || [];
+  const rebalanceStatus = data?.data?.rebalanceStatus;
   const asOf = data?.as_of_ts;
 
   // Compute PnL curve from equity curve
@@ -225,6 +226,20 @@ export default function OverviewPage() {
       <div className="panel p-4">
         <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
         <div className="space-y-1">
+          {rebalanceStatus?.same_position && (
+            <div className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm border border-hl-border">
+              <div className="flex items-center gap-2">
+                <span className="text-hl-muted">{formatTimeAgo(rebalanceStatus.rebalance_ts)}</span>
+                <span className="badge-live">Rebalance</span>
+                <span className="font-medium text-hl-secondary">
+                  Same position (no open/close at UTC 00:00 window)
+                </span>
+              </div>
+              <div className="font-num text-hl-muted">
+                UTC {formatUtcHm(rebalanceStatus.rebalance_ts)}
+              </div>
+            </div>
+          )}
           {recentFills.length > 0 ? (
             recentFills.slice(0, 10).map((f: any) => (
               <div
@@ -330,4 +345,11 @@ function formatTimeAgo(ts: string) {
   if (hours > 0) return `${hours}h`;
   if (mins > 0) return `${mins}m`;
   return 'now';
+}
+
+function formatUtcHm(ts: string) {
+  const d = new Date(ts);
+  const hh = `${d.getUTCHours()}`.padStart(2, '0');
+  const mm = `${d.getUTCMinutes()}`.padStart(2, '0');
+  return `${hh}:${mm}`;
 }
