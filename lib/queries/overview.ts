@@ -280,12 +280,21 @@ export async function getEquityCurve(
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${where}
+      ),
+      equity_by_ts AS (
+        SELECT ts, SUM(equity) AS equity
+        FROM filtered_equity
+        GROUP BY ts
+      ),
+      latest_window AS (
+        SELECT ts, equity
+        FROM equity_by_ts
+        ORDER BY ts DESC
+        LIMIT 500
       )
-      SELECT ts, SUM(equity) AS equity
-      FROM filtered_equity
-      GROUP BY ts
+      SELECT ts, equity
+      FROM latest_window
       ORDER BY ts ASC
-      LIMIT 500
     `,
     [to_ts, from_ts, ...eqFilters.params]
   );
