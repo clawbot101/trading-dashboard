@@ -4,7 +4,14 @@ import useSWR from 'swr';
 import Link from 'next/link';
 import { useState } from 'react';
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const fetcher = async (url: string) => {
+  const r = await fetch(url);
+  const payload = await r.json();
+  if (!r.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `Request failed (${r.status})`);
+  }
+  return payload;
+};
 
 const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
 
@@ -23,7 +30,7 @@ export default function TradesPage() {
     }
   );
 
-  const { data: ordersData } = useSWR(
+  const { data: ordersData, error: ordersError } = useSWR(
     `/api/orders?timeRange=${timeRange}&page=${page}&pageSize=50`,
     fetcher,
     {
@@ -131,7 +138,12 @@ export default function TradesPage() {
       {/* Error state */}
       {error && (
         <div className="mb-4 p-3 bg-hl-loss/20 border border-hl-loss rounded text-hl-loss">
-          Connection error. Retrying...
+          Fills API error: {error instanceof Error ? error.message : 'Unknown error'}
+        </div>
+      )}
+      {ordersError && (
+        <div className="mb-4 p-3 bg-hl-loss/20 border border-hl-loss rounded text-hl-loss">
+          Orders API error: {ordersError instanceof Error ? ordersError.message : 'Unknown error'}
         </div>
       )}
 
