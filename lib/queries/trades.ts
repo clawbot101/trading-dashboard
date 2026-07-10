@@ -212,7 +212,7 @@ export async function getPositionLifecycles(
         f.fill_price,
         f.fill_qty,
         COALESCE(f.fee, 0) as fee,
-        sess.strategy_name,
+        COALESCE(sess.strategy_name, '__unknown__') as strategy_name,
         CASE WHEN LOWER(f.side) = 'buy' THEN f.fill_qty ELSE -f.fill_qty END as signed_qty
       FROM fills f
       LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
@@ -225,7 +225,7 @@ export async function getPositionLifecycles(
       SELECT
         fws.*,
         SUM(fws.signed_qty) OVER (
-          PARTITION BY fws.session_id, fws.symbol
+          PARTITION BY fws.strategy_name, fws.venue, fws.symbol
           ORDER BY fws.ts, fws.fill_id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) as running_qty
@@ -235,7 +235,7 @@ export async function getPositionLifecycles(
       SELECT
         fwr.*,
         LAG(fwr.running_qty, 1, 0) OVER (
-          PARTITION BY fwr.session_id, fwr.symbol
+          PARTITION BY fwr.strategy_name, fwr.venue, fwr.symbol
           ORDER BY fwr.ts, fwr.fill_id
         ) as prev_running_qty
       FROM fills_with_running fwr
@@ -249,7 +249,7 @@ export async function getPositionLifecycles(
             ELSE 0
           END
         ) OVER (
-          PARTITION BY fwg.session_id, fwg.symbol
+          PARTITION BY fwg.strategy_name, fwg.venue, fwg.symbol
           ORDER BY fwg.ts, fwg.fill_id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) as lifecycle_seq
@@ -257,7 +257,7 @@ export async function getPositionLifecycles(
     ),
     lifecycle_agg AS (
       SELECT 
-        lt.session_id,
+        MIN(lt.session_id) as session_id,
         lt.strategy_name,
         lt.venue,
         lt.symbol,
@@ -280,18 +280,29 @@ export async function getPositionLifecycles(
                SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END)
           ELSE NULL END as avg_sell_price
       FROM lifecycle_tagged lt
-      GROUP BY lt.session_id, lt.strategy_name, lt.venue, lt.symbol, lt.lifecycle_seq
+      GROUP BY lt.strategy_name, lt.venue, lt.symbol, lt.lifecycle_seq
+    ),
+    latest_state AS (
+      SELECT DISTINCT ON (ts.strategy_name, ts.venue, ts.symbol)
+        ts.strategy_name,
+        ts.venue,
+        ts.symbol,
+        ts.position_qty,
+        ts.avg_entry_price,
+        ts.mark_price,
+        ts.unrealized_pnl
+      FROM trading_state ts
+      ORDER BY ts.strategy_name, ts.venue, ts.symbol, ts.updated_at DESC
     ),
     funding_deltas AS (
       SELECT 
         fp.ts,
-        fp.session_id,
         fp.venue,
         fp.symbol,
         COALESCE(fp.payment_amount, 0) -
         COALESCE(
           LAG(COALESCE(fp.payment_amount, 0)) OVER (
-            PARTITION BY fp.session_id, fp.venue, fp.symbol
+            PARTITION BY fp.venue, fp.symbol
             ORDER BY fp.ts
           ),
           0
@@ -301,15 +312,14 @@ export async function getPositionLifecycles(
     ),
     funding_agg AS (
       SELECT
-        la.session_id,
+        la.strategy_name,
         la.venue,
         la.symbol,
         la.lifecycle_seq,
         COALESCE(SUM(fd.funding_delta), 0) as total_funding
       FROM lifecycle_agg la
       LEFT JOIN funding_deltas fd
-        ON fd.session_id = la.session_id
-       AND fd.venue = la.venue
+        ON fd.venue = la.venue
        AND fd.symbol = la.symbol
        AND fd.ts >= la.open_time
        AND fd.ts <= (
@@ -318,12 +328,12 @@ export async function getPositionLifecycles(
            ELSE '${to_ts}'::timestamptz
          END
        )
-      GROUP BY la.session_id, la.venue, la.symbol, la.lifecycle_seq
+      GROUP BY la.strategy_name, la.venue, la.symbol, la.lifecycle_seq
     )
     SELECT 
-      MD5(COALESCE(la.session_id::text, '') || '|' || la.symbol || '|' || la.lifecycle_seq::text) as lifecycle_id,
+      MD5(la.strategy_name || '|' || la.venue || '|' || la.symbol || '|' || la.lifecycle_seq::text) as lifecycle_id,
       la.session_id,
-      la.strategy_name,
+      NULLIF(la.strategy_name, '__unknown__') as strategy_name,
       la.venue,
       la.symbol,
       CASE WHEN la.first_side = 'buy' THEN 'LONG' ELSE 'SHORT' END as side,
@@ -332,20 +342,38 @@ export async function getPositionLifecycles(
       CASE WHEN ABS(la.net_qty) < 1e-12 THEN 'CLOSED' ELSE 'OPEN' END as status,
       la.buy_notional,
       la.sell_notional,
-      (la.sell_notional - la.buy_notional) as gross_trading_pnl,
+      CASE
+        WHEN ABS(la.net_qty) < 1e-12 THEN (la.sell_notional - la.buy_notional)
+        WHEN la.first_side = 'buy' THEN
+          COALESCE((COALESCE(ls.mark_price, la.avg_buy_price) - COALESCE(ls.avg_entry_price, la.avg_buy_price)) * ABS(la.net_qty), 0)
+        ELSE
+          COALESCE((COALESCE(ls.avg_entry_price, la.avg_sell_price) - COALESCE(ls.mark_price, la.avg_sell_price)) * ABS(la.net_qty), 0)
+      END as gross_trading_pnl,
       la.total_fee,
       COALESCE(fa.total_funding, 0) as total_funding,
-      (la.sell_notional - la.buy_notional) + COALESCE(fa.total_funding, 0) - la.total_fee as net_pnl,
+      (
+        CASE
+          WHEN ABS(la.net_qty) < 1e-12 THEN (la.sell_notional - la.buy_notional)
+          WHEN la.first_side = 'buy' THEN
+            COALESCE((COALESCE(ls.mark_price, la.avg_buy_price) - COALESCE(ls.avg_entry_price, la.avg_buy_price)) * ABS(la.net_qty), 0)
+          ELSE
+            COALESCE((COALESCE(ls.avg_entry_price, la.avg_sell_price) - COALESCE(ls.mark_price, la.avg_sell_price)) * ABS(la.net_qty), 0)
+        END
+      ) + COALESCE(fa.total_funding, 0) - la.total_fee as net_pnl,
       la.buy_qty,
       la.sell_qty,
       la.avg_buy_price,
       la.avg_sell_price
     FROM lifecycle_agg la
     LEFT JOIN funding_agg fa
-      ON la.session_id = fa.session_id
+      ON la.strategy_name = fa.strategy_name
      AND la.venue = fa.venue
      AND la.symbol = fa.symbol
      AND la.lifecycle_seq = fa.lifecycle_seq
+    LEFT JOIN latest_state ls
+      ON ls.strategy_name = la.strategy_name
+     AND ls.venue = la.venue
+     AND ls.symbol = la.symbol
     ORDER BY la.open_time DESC
     LIMIT ${pageSize} OFFSET ${offset}
   `;
@@ -369,7 +397,8 @@ export async function getPositionLifecycleCount(
       SELECT
         f.fill_id,
         f.ts,
-        f.session_id,
+        COALESCE(sess.strategy_name, '__unknown__') as strategy_name,
+        f.venue,
         f.symbol,
         CASE WHEN LOWER(f.side) = 'buy' THEN f.fill_qty ELSE -f.fill_qty END as signed_qty
       FROM fills f
@@ -383,7 +412,7 @@ export async function getPositionLifecycleCount(
       SELECT
         fws.*,
         SUM(fws.signed_qty) OVER (
-          PARTITION BY fws.session_id, fws.symbol
+          PARTITION BY fws.strategy_name, fws.venue, fws.symbol
           ORDER BY fws.ts, fws.fill_id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) as running_qty
@@ -393,7 +422,7 @@ export async function getPositionLifecycleCount(
       SELECT
         fwr.*,
         LAG(fwr.running_qty, 1, 0) OVER (
-          PARTITION BY fwr.session_id, fwr.symbol
+          PARTITION BY fwr.strategy_name, fwr.venue, fwr.symbol
           ORDER BY fwr.ts, fwr.fill_id
         ) as prev_running_qty
       FROM fills_with_running fwr
@@ -407,7 +436,7 @@ export async function getPositionLifecycleCount(
             ELSE 0
           END
         ) OVER (
-          PARTITION BY fwg.session_id, fwg.symbol
+          PARTITION BY fwg.strategy_name, fwg.venue, fwg.symbol
           ORDER BY fwg.ts, fwg.fill_id
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) as lifecycle_seq
@@ -415,9 +444,9 @@ export async function getPositionLifecycleCount(
     )
     SELECT COUNT(*) as count
     FROM (
-      SELECT session_id, symbol, lifecycle_seq
+      SELECT strategy_name, venue, symbol, lifecycle_seq
       FROM lifecycle_tagged
-      GROUP BY session_id, symbol, lifecycle_seq
+      GROUP BY strategy_name, venue, symbol, lifecycle_seq
     ) lifecycles
   `;
 
