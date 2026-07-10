@@ -49,6 +49,33 @@ export interface OrderEventTotals {
   total_rows: number;
 }
 
+let fillsHasRealizedPnlCache: boolean | null = null;
+
+async function fillsHasColumn(columnName: string): Promise<boolean> {
+  if (columnName === 'realized_pnl' && fillsHasRealizedPnlCache !== null) {
+    return fillsHasRealizedPnlCache;
+  }
+
+  const row = await queryOne<{ exists: boolean }>(
+    `
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'fills'
+          AND column_name = $1
+      ) AS exists
+    `,
+    [columnName]
+  );
+
+  const exists = Boolean(row?.exists);
+  if (columnName === 'realized_pnl') {
+    fillsHasRealizedPnlCache = exists;
+  }
+  return exists;
+}
+
 export function timeRangeToTimestamps(range: string): { from_ts: string; to_ts: string } {
   const now = new Date();
   let from_ts: Date;
@@ -91,6 +118,10 @@ export async function getFills(
   pageSize = 50
 ): Promise<FillRow[]> {
   const offset = (page - 1) * pageSize;
+  const hasRealizedPnl = await fillsHasColumn('realized_pnl');
+  const realizedPnlSelect = hasRealizedPnl
+    ? 'f.realized_pnl'
+    : 'NULL::numeric AS realized_pnl';
 
   const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
   const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
@@ -109,7 +140,7 @@ export async function getFills(
       f.fee,
       f.strategy_order_id,
       f.broker_order_id,
-      f.realized_pnl,
+      ${realizedPnlSelect},
       sess.strategy_name,
       ABS(f.fill_qty * f.fill_price) as notional
     FROM fills f
@@ -295,6 +326,11 @@ export async function getFillTotals(
   strategy?: string,
   symbol?: string
 ): Promise<FillTotals | null> {
+  const hasRealizedPnl = await fillsHasColumn('realized_pnl');
+  const realizedPnlTotalSelect = hasRealizedPnl
+    ? 'SUM(COALESCE(f.realized_pnl, 0))'
+    : '0::numeric';
+
   const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
   const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
   const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
@@ -305,7 +341,7 @@ export async function getFillTotals(
       SUM(fill_qty) as total_qty,
       SUM(ABS(fill_qty * fill_price)) as total_notional,
       SUM(ABS(COALESCE(f.fee, 0))) as total_fee,
-      SUM(COALESCE(f.realized_pnl, 0)) as total_realized_pnl
+      ${realizedPnlTotalSelect} as total_realized_pnl
     FROM fills f
     LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
     WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
