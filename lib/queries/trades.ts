@@ -191,8 +191,11 @@ export async function getPositionLifecycles(
   to_ts: string,
   venue?: string,
   strategy?: string,
-  symbol?: string
+  symbol?: string,
+  page = 1,
+  pageSize = 50
 ): Promise<PositionLifecycleRow[]> {
+  const offset = (page - 1) * pageSize;
   const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
   const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
   const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
@@ -200,8 +203,17 @@ export async function getPositionLifecycles(
   const sql = `
     WITH fills_with_session AS (
       SELECT 
-        f.*,
-        sess.strategy_name
+        f.fill_id,
+        f.ts,
+        f.session_id,
+        f.venue,
+        f.symbol,
+        LOWER(f.side) as side,
+        f.fill_price,
+        f.fill_qty,
+        COALESCE(f.fee, 0) as fee,
+        sess.strategy_name,
+        CASE WHEN LOWER(f.side) = 'buy' THEN f.fill_qty ELSE -f.fill_qty END as signed_qty
       FROM fills f
       LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
       WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
@@ -209,83 +221,208 @@ export async function getPositionLifecycles(
       ${strategyFilter}
       ${symbolFilter}
     ),
-    -- Aggregate by session+symbol
+    fills_with_running AS (
+      SELECT
+        fws.*,
+        SUM(fws.signed_qty) OVER (
+          PARTITION BY fws.session_id, fws.symbol
+          ORDER BY fws.ts, fws.fill_id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) as running_qty
+      FROM fills_with_session fws
+    ),
+    fills_with_groups AS (
+      SELECT
+        fwr.*,
+        LAG(fwr.running_qty, 1, 0) OVER (
+          PARTITION BY fwr.session_id, fwr.symbol
+          ORDER BY fwr.ts, fwr.fill_id
+        ) as prev_running_qty
+      FROM fills_with_running fwr
+    ),
+    lifecycle_tagged AS (
+      SELECT
+        fwg.*,
+        SUM(
+          CASE
+            WHEN ABS(fwg.prev_running_qty) < 1e-12 THEN 1
+            ELSE 0
+          END
+        ) OVER (
+          PARTITION BY fwg.session_id, fwg.symbol
+          ORDER BY fwg.ts, fwg.fill_id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) as lifecycle_seq
+      FROM fills_with_groups fwg
+    ),
     lifecycle_agg AS (
       SELECT 
-        fws.session_id,
-        fws.strategy_name,
-        fws.venue,
-        fws.symbol,
-        -- Buy side totals
-        SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty * fws.fill_price ELSE 0 END) as buy_notional,
-        SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty ELSE 0 END) as buy_qty,
-        -- Sell side totals
-        SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty * fws.fill_price ELSE 0 END) as sell_notional,
-        SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty ELSE 0 END) as sell_qty,
-        -- Fees
-        SUM(COALESCE(fws.fee, 0)) as total_fee,
-        -- Timing
-        MIN(fws.ts) as open_time,
-        MAX(fws.ts) as close_time,
-        -- Average prices
-        CASE WHEN SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty ELSE 0 END) > 0
-          THEN SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty * fws.fill_price ELSE 0 END) / 
-               SUM(CASE WHEN fws.side = 'buy' THEN fws.fill_qty ELSE 0 END)
+        lt.session_id,
+        lt.strategy_name,
+        lt.venue,
+        lt.symbol,
+        lt.lifecycle_seq,
+        SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty * lt.fill_price ELSE 0 END) as buy_notional,
+        SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty ELSE 0 END) as buy_qty,
+        SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty * lt.fill_price ELSE 0 END) as sell_notional,
+        SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END) as sell_qty,
+        SUM(lt.fee) as total_fee,
+        SUM(lt.signed_qty) as net_qty,
+        MIN(lt.ts) as open_time,
+        MAX(lt.ts) as last_fill_ts,
+        (ARRAY_AGG(lt.side ORDER BY lt.ts, lt.fill_id))[1] as first_side,
+        CASE WHEN SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty ELSE 0 END) > 0
+          THEN SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty * lt.fill_price ELSE 0 END) /
+               SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty ELSE 0 END)
           ELSE NULL END as avg_buy_price,
-        CASE WHEN SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty ELSE 0 END) > 0
-          THEN SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty * fws.fill_price ELSE 0 END) / 
-               SUM(CASE WHEN fws.side = 'sell' THEN fws.fill_qty ELSE 0 END)
+        CASE WHEN SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END) > 0
+          THEN SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty * lt.fill_price ELSE 0 END) /
+               SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END)
           ELSE NULL END as avg_sell_price
-      FROM fills_with_session fws
-      GROUP BY fws.session_id, fws.strategy_name, fws.venue, fws.symbol
+      FROM lifecycle_tagged lt
+      GROUP BY lt.session_id, lt.strategy_name, lt.venue, lt.symbol, lt.lifecycle_seq
     ),
-    -- Get funding from funding_payments
-    funding_agg AS (
+    funding_deltas AS (
       SELECT 
+        fp.ts,
         fp.session_id,
+        fp.venue,
         fp.symbol,
-        SUM(fp.payment_amount) as total_funding
+        COALESCE(fp.payment_amount, 0) -
+        COALESCE(
+          LAG(COALESCE(fp.payment_amount, 0)) OVER (
+            PARTITION BY fp.session_id, fp.venue, fp.symbol
+            ORDER BY fp.ts
+          ),
+          0
+        ) as funding_delta
       FROM funding_payments fp
-      WHERE fp.ts >= '${from_ts}' AND fp.ts <= '${to_ts}'
-      GROUP BY fp.session_id, fp.symbol
+      WHERE fp.ts <= '${to_ts}'
+    ),
+    funding_agg AS (
+      SELECT
+        la.session_id,
+        la.venue,
+        la.symbol,
+        la.lifecycle_seq,
+        COALESCE(SUM(fd.funding_delta), 0) as total_funding
+      FROM lifecycle_agg la
+      LEFT JOIN funding_deltas fd
+        ON fd.session_id = la.session_id
+       AND fd.venue = la.venue
+       AND fd.symbol = la.symbol
+       AND fd.ts >= la.open_time
+       AND fd.ts <= (
+         CASE
+           WHEN ABS(la.net_qty) < 1e-12 THEN la.last_fill_ts
+           ELSE '${to_ts}'::timestamptz
+         END
+       )
+      GROUP BY la.session_id, la.venue, la.symbol, la.lifecycle_seq
     )
     SELECT 
-      MD5(la.session_id || la.symbol || la.open_time) as lifecycle_id,
+      MD5(COALESCE(la.session_id, '') || '|' || la.symbol || '|' || la.lifecycle_seq::text) as lifecycle_id,
       la.session_id,
       la.strategy_name,
       la.venue,
       la.symbol,
-      CASE WHEN la.buy_qty > la.sell_qty THEN 'LONG' ELSE 'SHORT' END as side,
+      CASE WHEN la.first_side = 'buy' THEN 'LONG' ELSE 'SHORT' END as side,
       la.open_time,
-      CASE WHEN la.buy_qty = la.sell_qty THEN la.close_time ELSE NULL END as close_time,
-      CASE WHEN la.buy_qty = la.sell_qty THEN 'CLOSED' ELSE 'OPEN' END as status,
+      CASE WHEN ABS(la.net_qty) < 1e-12 THEN la.last_fill_ts ELSE NULL END as close_time,
+      CASE WHEN ABS(la.net_qty) < 1e-12 THEN 'CLOSED' ELSE 'OPEN' END as status,
       la.buy_notional,
       la.sell_notional,
-      -- Gross PnL: for LONG = sell_notional - (sell_qty/buy_qty) * buy_notional
-      CASE 
-        WHEN la.buy_qty > la.sell_qty THEN 
-          la.sell_notional - (la.sell_qty::numeric / NULLIF(la.buy_qty, 0)) * la.buy_notional
-        ELSE la.sell_notional - la.buy_notional
-      END as gross_trading_pnl,
+      (la.sell_notional - la.buy_notional) as gross_trading_pnl,
       la.total_fee,
       COALESCE(fa.total_funding, 0) as total_funding,
-      -- Net PnL = gross_pnl + funding - fees
-      CASE 
-        WHEN la.buy_qty > la.sell_qty THEN 
-          la.sell_notional - (la.sell_qty::numeric / NULLIF(la.buy_qty, 0)) * la.buy_notional
-        ELSE la.sell_notional - la.buy_notional
-      END + COALESCE(fa.total_funding, 0) - la.total_fee as net_pnl,
+      (la.sell_notional - la.buy_notional) + COALESCE(fa.total_funding, 0) - la.total_fee as net_pnl,
       la.buy_qty,
       la.sell_qty,
       la.avg_buy_price,
       la.avg_sell_price
     FROM lifecycle_agg la
-    LEFT JOIN funding_agg fa ON la.session_id = fa.session_id AND la.symbol = fa.symbol
+    LEFT JOIN funding_agg fa
+      ON la.session_id = fa.session_id
+     AND la.venue = fa.venue
+     AND la.symbol = fa.symbol
+     AND la.lifecycle_seq = fa.lifecycle_seq
     ORDER BY la.open_time DESC
-    LIMIT 500
+    LIMIT ${pageSize} OFFSET ${offset}
   `;
 
   return query<PositionLifecycleRow>(sql);
+}
+
+export async function getPositionLifecycleCount(
+  from_ts: string,
+  to_ts: string,
+  venue?: string,
+  strategy?: string,
+  symbol?: string
+): Promise<number> {
+  const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
+  const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
+  const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
+
+  const sql = `
+    WITH fills_with_session AS (
+      SELECT
+        f.fill_id,
+        f.ts,
+        f.session_id,
+        f.symbol,
+        CASE WHEN LOWER(f.side) = 'buy' THEN f.fill_qty ELSE -f.fill_qty END as signed_qty
+      FROM fills f
+      LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
+      ${venueFilter}
+      ${strategyFilter}
+      ${symbolFilter}
+    ),
+    fills_with_running AS (
+      SELECT
+        fws.*,
+        SUM(fws.signed_qty) OVER (
+          PARTITION BY fws.session_id, fws.symbol
+          ORDER BY fws.ts, fws.fill_id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) as running_qty
+      FROM fills_with_session fws
+    ),
+    fills_with_groups AS (
+      SELECT
+        fwr.*,
+        LAG(fwr.running_qty, 1, 0) OVER (
+          PARTITION BY fwr.session_id, fwr.symbol
+          ORDER BY fwr.ts, fwr.fill_id
+        ) as prev_running_qty
+      FROM fills_with_running fwr
+    ),
+    lifecycle_tagged AS (
+      SELECT
+        fwg.*,
+        SUM(
+          CASE
+            WHEN ABS(fwg.prev_running_qty) < 1e-12 THEN 1
+            ELSE 0
+          END
+        ) OVER (
+          PARTITION BY fwg.session_id, fwg.symbol
+          ORDER BY fwg.ts, fwg.fill_id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) as lifecycle_seq
+      FROM fills_with_groups fwg
+    )
+    SELECT COUNT(*) as count
+    FROM (
+      SELECT session_id, symbol, lifecycle_seq
+      FROM lifecycle_tagged
+      GROUP BY session_id, symbol, lifecycle_seq
+    ) lifecycles
+  `;
+
+  const result = await queryOne<{ count: number }>(sql);
+  return result?.count || 0;
 }
 
 /**
