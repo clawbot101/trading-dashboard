@@ -41,10 +41,7 @@ export default function OverviewPage() {
   const rebalanceStatus = data?.data?.rebalanceStatus;
   const asOf = data?.as_of_ts;
 
-  const displayEquityCurve = useMemo(
-    () => fillEquityGaps(equityCurve, 2 * 60 * 1000, 60 * 1000),
-    [equityCurve]
-  );
+  const displayEquityCurve = useMemo(() => normalizeEquityCurve(equityCurve), [equityCurve]);
 
   // Compute PnL curve from equity curve
   const pnlCurve = useMemo(() => {
@@ -218,9 +215,17 @@ export default function OverviewPage() {
             </div>
           </div>
           {chartView === 'equity' ? (
-            <EquityChart data={displayEquityCurve} height={256} />
+            <EquityChart
+              key={`eq-${timeRange}-${displayEquityCurve.length}`}
+              data={displayEquityCurve}
+              height={256}
+            />
           ) : (
-            <PnlChart data={pnlCurve} height={256} />
+            <PnlChart
+              key={`pnl-${timeRange}-${pnlCurve.length}-${stats?.initial_equity ?? 'na'}`}
+              data={pnlCurve}
+              height={256}
+            />
           )}
           {chartView === 'pnl' && (
             <div className="mt-2 text-xs text-hl-muted">
@@ -332,23 +337,19 @@ export default function OverviewPage() {
   );
 }
 
-function fillEquityGaps(points: any[], maxGapMs: number, stepMs: number) {
+function normalizeEquityCurve(points: any[]) {
   if (!points.length) return points;
-  const filled: any[] = [points[0]];
-  for (let i = 1; i < points.length; i += 1) {
-    const prev = points[i - 1];
-    const cur = points[i];
-    const prevMs = new Date(prev.ts).getTime();
-    const curMs = new Date(cur.ts).getTime();
-    const gap = curMs - prevMs;
-    if (gap > maxGapMs) {
-      for (let t = prevMs + stepMs; t < curMs; t += stepMs) {
-        filled.push({ ts: new Date(t).toISOString(), equity: prev.equity });
-      }
-    }
-    filled.push(cur);
+
+  const map = new Map<string, any>();
+  for (const p of points) {
+    if (!p?.ts) continue;
+    // Keep latest value for duplicated timestamp keys.
+    map.set(new Date(p.ts).toISOString(), p);
   }
-  return filled;
+
+  return Array.from(map.values()).sort(
+    (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
+  );
 }
 
 // Stat card component

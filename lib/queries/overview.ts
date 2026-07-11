@@ -80,6 +80,33 @@ interface QueryFilters {
   strategies?: string[];
 }
 
+let fillsHasRealizedPnlCache: boolean | null = null;
+
+async function fillsHasColumn(columnName: string): Promise<boolean> {
+  if (columnName === 'realized_pnl' && fillsHasRealizedPnlCache !== null) {
+    return fillsHasRealizedPnlCache;
+  }
+
+  const row = await queryOne<{ exists: boolean }>(
+    `
+      SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'fills'
+          AND column_name = $1
+      ) AS exists
+    `,
+    [columnName]
+  );
+
+  const exists = Boolean(row?.exists);
+  if (columnName === 'realized_pnl') {
+    fillsHasRealizedPnlCache = exists;
+  }
+  return exists;
+}
+
 function isAllValue(value?: string): boolean {
   return !value || value.toLowerCase() === 'all';
 }
@@ -238,7 +265,6 @@ export async function getOverviewStats(
     `
       SELECT
         COALESCE(SUM(ts.unrealized_pnl), 0) AS total_unrealized_pnl,
-        COALESCE(SUM(ts.realized_pnl), 0) AS total_realized_pnl,
         COALESCE(SUM(ts.margin), 0) AS total_margin,
         COUNT(*) FILTER (WHERE ts.position_qty != 0) AS open_positions,
         COALESCE(
@@ -260,6 +286,7 @@ export async function getOverviewStats(
 
   const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
   const cashFlowPeriod = await getCashFlowDelta(from_ts, to_ts, venue, strategies);
+  const realizedPnl = await getRealizedPnlNet(from_ts, to_ts, venue, strategies, fundingDelta);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
   const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
@@ -272,7 +299,7 @@ export async function getOverviewStats(
     pnl_24h: pnlPeriod,
     pnl_24h_pct: pnlPeriodPct,
     total_unrealized_pnl: Number(stateRow?.total_unrealized_pnl ?? 0),
-    total_realized_pnl: Number(stateRow?.total_realized_pnl ?? 0),
+    total_realized_pnl: realizedPnl,
     total_funding: fundingDelta,
     total_margin: Number(stateRow?.total_margin ?? 0),
     max_drawdown_pct: 0,
@@ -283,6 +310,42 @@ export async function getOverviewStats(
     initial_equity_ts: equityRow?.initial_equity_ts ?? null,
     cash_flow_period: cashFlowPeriod,
   };
+}
+
+async function getRealizedPnlNet(
+  fromTs: string,
+  toTs: string,
+  venue?: string,
+  strategies?: string[],
+  fundingDeltaOverride?: number
+): Promise<number> {
+  const options: QueryFilters = { venue, strategies };
+  const filters = buildFilters(3, options, true, 'f');
+  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+  const hasRealizedPnl = await fillsHasColumn('realized_pnl');
+
+  const row = await queryOne<{ closed_realized: number; total_fees: number }>(
+    `
+      SELECT
+        COALESCE(SUM(${hasRealizedPnl ? 'COALESCE(f.realized_pnl, 0)' : '0'}), 0) AS closed_realized,
+        COALESCE(SUM(ABS(COALESCE(f.fee, 0))), 0) AS total_fees
+      FROM fills f
+      LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      WHERE f.ts > $2
+        AND f.ts <= $1
+        ${whereSql}
+    `,
+    [toTs, fromTs, ...filters.params]
+  );
+
+  const closedRealized = Number(row?.closed_realized ?? 0);
+  const totalFees = Number(row?.total_fees ?? 0);
+  const fundingDelta =
+    fundingDeltaOverride == null
+      ? await getFundingDelta(fromTs, toTs, venue, strategies)
+      : fundingDeltaOverride;
+
+  return closedRealized + fundingDelta - totalFees;
 }
 
 /**

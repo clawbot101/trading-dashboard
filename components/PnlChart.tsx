@@ -1,14 +1,7 @@
 'use client';
 
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
+import { useEffect, useRef } from 'react';
+import type { UTCTimestamp } from 'lightweight-charts';
 
 interface PnlCurvePoint {
   ts: string;
@@ -20,11 +13,112 @@ interface PnlChartProps {
   height?: number;
 }
 
-function formatXAxisTick(ts: string) {
-  const d = new Date(ts);
-  const hh = `${d.getHours()}`.padStart(2, '0');
-  const mm = `${d.getMinutes()}`.padStart(2, '0');
-  return `${hh}:${mm}`;
+function toChartTime(ts: string): UTCTimestamp {
+  return Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp;
+}
+
+function ChartInner({ data, height = 260 }: PnlChartProps) {
+  const chartContainerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<any>(null);
+  const seriesRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (!chartContainerRef.current) return;
+    let disposed = false;
+    let localChart: any = null;
+
+    import('lightweight-charts').then(({ createChart, ColorType }) => {
+      if (disposed || !chartContainerRef.current) return;
+
+      // React StrictMode can mount effects twice; clear stale layers.
+      chartContainerRef.current.innerHTML = '';
+      const chart = createChart(chartContainerRef.current, {
+        width: chartContainerRef.current.clientWidth,
+        height,
+        layout: {
+          background: { type: ColorType.Solid, color: 'transparent' },
+          textColor: '#a0a0a0',
+        },
+        grid: {
+          vertLines: { color: 'rgba(60, 60, 60, 0.3)' },
+          horzLines: { color: 'rgba(60, 60, 60, 0.3)' },
+        },
+        rightPriceScale: {
+          borderColor: 'rgba(60, 60, 60, 0.5)',
+        },
+        timeScale: {
+          borderColor: 'rgba(60, 60, 60, 0.5)',
+          timeVisible: true,
+          secondsVisible: false,
+        },
+        crosshair: {
+          horzLine: {
+            visible: false,
+            labelVisible: false,
+          },
+        },
+      });
+
+      localChart = chart;
+      chartRef.current = chart;
+
+      const lineSeries = chart.addLineSeries();
+      lineSeries.applyOptions({
+        color: '#22c55e',
+        lineWidth: 2,
+        priceLineVisible: false,
+        priceLineColor: 'rgba(0,0,0,0)',
+        lastValueVisible: false,
+        crosshairMarkerVisible: false,
+      });
+
+      seriesRef.current = lineSeries;
+      lineSeries.setData(
+        data.map((point) => ({
+          time: toChartTime(point.ts),
+          value: point.pnl,
+        }))
+      );
+      chart.timeScale().fitContent();
+    });
+
+    const handleResize = () => {
+      if (chartContainerRef.current && chartRef.current) {
+        chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth });
+      }
+    };
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      disposed = true;
+      window.removeEventListener('resize', handleResize);
+      if (localChart) {
+        localChart.remove();
+        localChart = null;
+      }
+      if (chartRef.current) {
+        chartRef.current.remove();
+        chartRef.current = null;
+        seriesRef.current = null;
+      }
+    };
+  }, [height]);
+
+  useEffect(() => {
+    if (!seriesRef.current || !data.length) return;
+    seriesRef.current.setData(
+      data.map((point) => ({
+        time: toChartTime(point.ts),
+        value: point.pnl,
+      }))
+    );
+    if (chartRef.current) {
+      chartRef.current.timeScale().fitContent();
+    }
+  }, [data]);
+
+  return <div ref={chartContainerRef} className="rounded" />;
 }
 
 export default function PnlChart({ data, height = 260 }: PnlChartProps) {
@@ -36,46 +130,5 @@ export default function PnlChart({ data, height = 260 }: PnlChartProps) {
     );
   }
 
-  return (
-    <div style={{ width: '100%', height }}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 8, left: 8, bottom: 8 }}>
-          <CartesianGrid stroke="rgba(60, 60, 60, 0.3)" vertical horizontal />
-          <XAxis
-            dataKey="ts"
-            tickFormatter={formatXAxisTick}
-            minTickGap={24}
-            tick={{ fill: '#a0a0a0', fontSize: 11 }}
-            axisLine={{ stroke: 'rgba(60, 60, 60, 0.5)' }}
-            tickLine={false}
-          />
-          <YAxis
-            tick={{ fill: '#a0a0a0', fontSize: 11 }}
-            axisLine={{ stroke: 'rgba(60, 60, 60, 0.5)' }}
-            tickLine={false}
-            width={56}
-            domain={['dataMin', 'dataMax']}
-          />
-          <Tooltip
-            labelFormatter={(ts) => new Date(String(ts)).toLocaleString()}
-            formatter={(v: any) => [Number(v).toFixed(2), 'PnL']}
-            contentStyle={{
-              backgroundColor: '#0f172a',
-              border: '1px solid #334155',
-              color: '#e2e8f0',
-            }}
-          />
-          <Line
-            type="monotone"
-            dataKey="pnl"
-            stroke="#22c55e"
-            strokeWidth={2}
-            dot={false}
-            activeDot={{ r: 3 }}
-            isAnimationActive={false}
-          />
-        </LineChart>
-      </ResponsiveContainer>
-    </div>
-  );
+  return <ChartInner data={data} height={height} />;
 }
