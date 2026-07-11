@@ -21,6 +21,11 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
+  const dataRef = useRef<PnlCurvePoint[]>(data);
+
+  useEffect(() => {
+    dataRef.current = data;
+  }, [data]);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -85,7 +90,7 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
 
       seriesRef.current = baselineSeries;
       baselineSeries.setData(
-        data.map((point) => ({
+        dataRef.current.map((point) => ({
           time: toChartTime(point.ts),
           value: point.pnl,
         }))
