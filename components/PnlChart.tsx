@@ -17,11 +17,25 @@ function toChartTime(ts: string): UTCTimestamp {
   return Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp;
 }
 
+function toUniqueSecondData(points: PnlCurvePoint[]) {
+  const bySecond = new Map<number, number>();
+  for (const p of points) {
+    const sec = Math.floor(new Date(p.ts).getTime() / 1000);
+    const val = Number(p.pnl);
+    if (!Number.isFinite(sec) || !Number.isFinite(val)) continue;
+    bySecond.set(sec, val); // last point in same second wins
+  }
+  return Array.from(bySecond.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([sec, val]) => ({ time: sec as UTCTimestamp, value: val }));
+}
+
 function ChartInner({ data, height = 260 }: PnlChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<PnlCurvePoint[]>(data);
+  const hasFittedRef = useRef(false);
 
   useEffect(() => {
     dataRef.current = data;
@@ -89,13 +103,9 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
       });
 
       seriesRef.current = baselineSeries;
-      baselineSeries.setData(
-        dataRef.current.map((point) => ({
-          time: toChartTime(point.ts),
-          value: point.pnl,
-        }))
-      );
+      baselineSeries.setData(toUniqueSecondData(dataRef.current));
       chart.timeScale().fitContent();
+      hasFittedRef.current = true;
     });
 
     const handleResize = () => {
@@ -119,14 +129,10 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
 
   useEffect(() => {
     if (!seriesRef.current || !data.length) return;
-    seriesRef.current.setData(
-      data.map((point) => ({
-        time: toChartTime(point.ts),
-        value: point.pnl,
-      }))
-    );
-    if (chartRef.current) {
+    seriesRef.current.setData(toUniqueSecondData(data));
+    if (chartRef.current && !hasFittedRef.current) {
       chartRef.current.timeScale().fitContent();
+      hasFittedRef.current = true;
     }
   }, [data]);
 

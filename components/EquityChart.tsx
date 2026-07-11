@@ -17,12 +17,26 @@ function toChartTime(ts: string): UTCTimestamp {
   return Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp;
 }
 
+function toUniqueSecondData(points: EquityCurvePoint[]) {
+  const bySecond = new Map<number, number>();
+  for (const p of points) {
+    const sec = Math.floor(new Date(p.ts).getTime() / 1000);
+    const val = Number(p.equity);
+    if (!Number.isFinite(sec) || !Number.isFinite(val)) continue;
+    bySecond.set(sec, val); // last point in same second wins
+  }
+  return Array.from(bySecond.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([sec, val]) => ({ time: sec as UTCTimestamp, value: val }));
+}
+
 // Chart component that uses lightweight-charts
 function ChartInner({ data, height = 260 }: EquityChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<EquityCurvePoint[]>(data);
+  const hasFittedRef = useRef(false);
 
   useEffect(() => {
     dataRef.current = data;
@@ -85,12 +99,10 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
       seriesRef.current = lineSeries;
 
       // Set initial data
-      const chartData = dataRef.current.map((point) => ({
-        time: toChartTime(point.ts),
-        value: point.equity,
-      }));
+      const chartData = toUniqueSecondData(dataRef.current);
       lineSeries.setData(chartData);
       chart.timeScale().fitContent();
+      hasFittedRef.current = true;
     });
 
     const handleResize = () => {
@@ -118,15 +130,13 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
   useEffect(() => {
     if (!seriesRef.current || !data.length) return;
 
-    const chartData = data.map((point) => ({
-      time: toChartTime(point.ts),
-      value: point.equity,
-    }));
+    const chartData = toUniqueSecondData(data);
 
     seriesRef.current.setData(chartData);
 
-    if (chartRef.current) {
+    if (chartRef.current && !hasFittedRef.current) {
       chartRef.current.timeScale().fitContent();
+      hasFittedRef.current = true;
     }
   }, [data]);
 
