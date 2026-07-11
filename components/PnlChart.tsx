@@ -104,15 +104,11 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
     return () => {
       disposed = true;
       window.removeEventListener('resize', handleResize);
-      if (localChart) {
-        localChart.remove();
-        localChart = null;
-      }
-      if (chartRef.current) {
-        chartRef.current.remove();
-        chartRef.current = null;
-        seriesRef.current = null;
-      }
+      const chartToRemove = localChart || chartRef.current;
+      if (chartToRemove) chartToRemove.remove();
+      localChart = null;
+      chartRef.current = null;
+      seriesRef.current = null;
     };
   }, [height]);
 
