@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import dynamic from 'next/dynamic';
+import type { UTCTimestamp } from 'lightweight-charts';
 
 interface PnlCurvePoint {
   ts: string;
@@ -10,11 +10,16 @@ interface PnlCurvePoint {
 
 interface PnlChartProps {
   data: PnlCurvePoint[];
+  markers?: Array<{ ts: string; text?: string; color?: string }>;
   height?: number;
 }
 
+function toChartTime(ts: string): UTCTimestamp {
+  return Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp;
+}
+
 // Chart component that uses lightweight-charts
-function ChartInner({ data, height = 260 }: PnlChartProps) {
+function ChartInner({ data, markers = [], height = 260 }: PnlChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
@@ -51,18 +56,29 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
         color: '#22c55e',
         lineWidth: 2,
         crosshairMarkerVisible: true,
-        lastValueVisible: true,
-        priceLineVisible: true,
+        lastValueVisible: false,
+        priceLineVisible: false,
       });
 
       seriesRef.current = lineSeries;
 
       // Set initial data
       const chartData = data.map((point) => ({
-        time: Math.floor(new Date(point.ts).getTime() / 1000),
+        time: toChartTime(point.ts),
         value: point.pnl,
       }));
       lineSeries.setData(chartData);
+      if (typeof lineSeries.setMarkers === 'function') {
+        lineSeries.setMarkers(
+          markers.map((m) => ({
+            time: toChartTime(m.ts),
+            position: 'inBar',
+            color: m.color || '#22c55e',
+            shape: 'circle',
+            text: m.text || 'RB',
+          }))
+        );
+      }
       chart.timeScale().fitContent();
     });
 
@@ -84,28 +100,39 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
         seriesRef.current = null;
       }
     };
-  }, [height]);
+  }, [height, markers]);
 
   // Update data when it changes
   useEffect(() => {
     if (!seriesRef.current || !data.length) return;
 
     const chartData = data.map((point) => ({
-      time: Math.floor(new Date(point.ts).getTime() / 1000),
+      time: toChartTime(point.ts),
       value: point.pnl,
     }));
 
     seriesRef.current.setData(chartData);
+    if (typeof seriesRef.current.setMarkers === 'function') {
+      seriesRef.current.setMarkers(
+        markers.map((m) => ({
+          time: toChartTime(m.ts),
+          position: 'inBar',
+          color: m.color || '#22c55e',
+          shape: 'circle',
+          text: m.text || 'RB',
+        }))
+      );
+    }
 
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
     }
-  }, [data]);
+  }, [data, markers]);
 
   return <div ref={chartContainerRef} className="rounded" />;
 }
 
-export default function PnlChart({ data, height = 260 }: PnlChartProps) {
+export default function PnlChart({ data, markers = [], height = 260 }: PnlChartProps) {
   if (data.length < 2) {
     return (
       <div className="h-64 bg-hl-hover rounded flex items-center justify-center text-hl-muted text-sm">
@@ -114,5 +141,5 @@ export default function PnlChart({ data, height = 260 }: PnlChartProps) {
     );
   }
 
-  return <ChartInner data={data} height={height} />;
+  return <ChartInner data={data} markers={markers} height={height} />;
 }

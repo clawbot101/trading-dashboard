@@ -1,7 +1,6 @@
 'use client';
 
 import useSWR from 'swr';
-import Link from 'next/link';
 import { useState, useMemo } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
@@ -17,11 +16,12 @@ const fetcher = async (url: string) => {
 
 // Time range options
 const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
+const EMPTY_LIST: any[] = [];
 
 export default function OverviewPage() {
   const [timeRange, setTimeRange] = useState('24H');
   const [paused, setPaused] = useState(false);
-  const [chartView, setChartView] = useState<'equity' | 'pnl'>('equity');
+  const [chartView, setChartView] = useState<'equity' | 'pnl'>('pnl');
 
   const { data, error, isLoading } = useSWR(
     `/api/overview?range=${timeRange.toLowerCase()}`,
@@ -33,22 +33,39 @@ export default function OverviewPage() {
   );
 
   const stats = data?.data?.stats;
-  const equityCurve = data?.data?.equityCurve || [];
-  const strategies = data?.data?.strategyLeaderboard || [];
-  const venueSplit = data?.data?.venueSplit || [];
-  const recentFills = data?.data?.recentFills || [];
+  const equityCurve = data?.data?.equityCurve ?? EMPTY_LIST;
+  const rebalanceEvents = data?.data?.rebalanceEvents ?? EMPTY_LIST;
+  const strategies = data?.data?.strategyLeaderboard ?? EMPTY_LIST;
+  const venueSplit = data?.data?.venueSplit ?? EMPTY_LIST;
+  const recentFills = data?.data?.recentFills ?? EMPTY_LIST;
   const rebalanceStatus = data?.data?.rebalanceStatus;
   const asOf = data?.as_of_ts;
 
+  const displayEquityCurve = useMemo(
+    () => fillEquityGaps(equityCurve, 2 * 60 * 1000, 60 * 1000),
+    [equityCurve]
+  );
+
   // Compute PnL curve from equity curve
   const pnlCurve = useMemo(() => {
-    if (!equityCurve.length) return [];
-    const firstEquity = equityCurve[0]?.equity || 0;
-    return equityCurve.map((p: any) => ({
+    if (!displayEquityCurve.length) return [];
+    // Since-inception baseline: match account's initial equity (e.g. ~999 at start).
+    const inceptionEquity = stats?.initial_equity ?? displayEquityCurve[0]?.equity ?? 0;
+    return displayEquityCurve.map((p: any) => ({
       ts: p.ts,
-      pnl: (p.equity || 0) - firstEquity,
+      pnl: (p.equity || 0) - inceptionEquity,
     }));
-  }, [equityCurve]);
+  }, [displayEquityCurve, stats?.initial_equity]);
+
+  const rebalanceMarkers = useMemo(
+    () =>
+      rebalanceEvents.map((e: any) => ({
+        ts: e.rebalance_ts,
+        text: e.same_position ? 'SAME' : 'RB',
+        color: e.same_position ? '#64748b' : '#22c55e',
+      })),
+    [rebalanceEvents]
+  );
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -189,7 +206,7 @@ export default function OverviewPage() {
                     : 'bg-hl-hover text-hl-secondary'
                 }`}
               >
-                PnL
+                PnL (Since Start)
               </button>
             </div>
             <div className="text-xs text-hl-muted">
@@ -197,9 +214,14 @@ export default function OverviewPage() {
             </div>
           </div>
           {chartView === 'equity' ? (
-            <EquityChart data={equityCurve} height={256} />
+            <EquityChart data={displayEquityCurve} markers={rebalanceMarkers} height={256} />
           ) : (
-            <PnlChart data={pnlCurve} height={256} />
+            <PnlChart data={pnlCurve} markers={rebalanceMarkers} height={256} />
+          )}
+          {chartView === 'pnl' && (
+            <div className="mt-2 text-xs text-hl-muted">
+              Baseline equity: {formatUsd(stats?.initial_equity ?? null)}
+            </div>
           )}
         </div>
 
@@ -210,7 +232,7 @@ export default function OverviewPage() {
             <div className="text-xs text-hl-secondary mb-2">Strategy Leaderboard</div>
             <div className="space-y-1">
               {strategies.length > 0 ? (
-                strategies.slice(0, 5).map((s: any, i: number) => (
+                strategies.slice(0, 5).map((s: any) => (
                   <div
                     key={s.strategy_name}
                     className="flex items-center justify-between p-2 bg-hl-hover rounded"
@@ -304,6 +326,25 @@ export default function OverviewPage() {
       </div>
     </div>
   );
+}
+
+function fillEquityGaps(points: any[], maxGapMs: number, stepMs: number) {
+  if (!points.length) return points;
+  const filled: any[] = [points[0]];
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = points[i - 1];
+    const cur = points[i];
+    const prevMs = new Date(prev.ts).getTime();
+    const curMs = new Date(cur.ts).getTime();
+    const gap = curMs - prevMs;
+    if (gap > maxGapMs) {
+      for (let t = prevMs + stepMs; t < curMs; t += stepMs) {
+        filled.push({ ts: new Date(t).toISOString(), equity: prev.equity });
+      }
+    }
+    filled.push(cur);
+  }
+  return filled;
 }
 
 // Stat card component

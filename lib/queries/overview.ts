@@ -21,6 +21,7 @@ export interface OverviewStats {
   open_positions: number;
   gross_exposure: number;
   equity_24h_ago: number;
+  initial_equity: number;
 }
 
 export interface EquityCurvePoint {
@@ -57,6 +58,12 @@ export interface RecentFill {
 export interface RebalanceStatus {
   rebalance_ts: string;
   window_end_ts: string;
+  fill_count: number;
+  same_position: boolean;
+}
+
+export interface RebalanceEvent {
+  rebalance_ts: string;
   fill_count: number;
   same_position: boolean;
 }
@@ -161,15 +168,20 @@ export async function getOverviewStats(
   // net_pnl(t0, t1) = equity(t1) - equity(t0)
   const equityRow = await queryOne<any>(
     `
-      WITH filtered_equity AS (
-        SELECT e.ts, e.equity
+      WITH equity_by_key AS (
+        SELECT
+          e.ts,
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${eqWhere}
+        GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
       equity_by_ts AS (
         SELECT ts, SUM(equity) AS total_equity
-        FROM filtered_equity
+        FROM equity_by_key
         GROUP BY ts
       ),
       latest_point AS (
@@ -194,6 +206,7 @@ export async function getOverviewStats(
       )
       SELECT
         COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
+        COALESCE((SELECT total_equity FROM first_point), 0) AS initial_equity,
         COALESCE(
           (SELECT total_equity FROM baseline_point),
           (SELECT total_equity FROM first_point),
@@ -240,6 +253,7 @@ export async function getOverviewStats(
   const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
+  const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
   const equityPeriodAgo = Number(equityRow?.equity_period_ago ?? equityNow);
   const pnlPeriod = equityNow - equityPeriodAgo;
   const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
@@ -256,6 +270,7 @@ export async function getOverviewStats(
     open_positions: Number(stateRow?.open_positions ?? 0),
     gross_exposure: Number(stateRow?.gross_exposure ?? 0),
     equity_24h_ago: equityPeriodAgo,
+    initial_equity: initialEquity,
   };
 }
 
@@ -275,15 +290,20 @@ export async function getEquityCurve(
 
   const rows = await query<EquityCurvePoint>(
     `
-      WITH filtered_equity AS (
-        SELECT e.ts, e.equity
+      WITH equity_by_key AS (
+        SELECT
+          e.ts,
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${where}
+        GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
       equity_by_ts AS (
         SELECT ts, SUM(equity) AS equity
-        FROM filtered_equity
+        FROM equity_by_key
         GROUP BY ts
       ),
       latest_window AS (
@@ -304,14 +324,19 @@ export async function getEquityCurve(
   // Fallback for stale data: show the latest points even if outside requested range.
   return query<EquityCurvePoint>(
     `
-      WITH filtered_equity AS (
-        SELECT e.ts, e.equity
+      WITH equity_by_key AS (
+        SELECT
+          e.ts,
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
+        GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       )
       SELECT ts, SUM(equity) AS equity
-      FROM filtered_equity
+      FROM equity_by_key
       GROUP BY ts
       ORDER BY ts DESC
       LIMIT 500
@@ -334,18 +359,20 @@ export async function getStrategyLeaderboard(
 
   const rows = await query<any>(
     `
-      WITH filtered_equity AS (
+      WITH equity_by_key AS (
         SELECT
           COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
           e.ts,
-          e.equity
+          MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${eqWhere}
+        GROUP BY COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown'), e.ts
       ),
       strategy_equity AS (
         SELECT strategy_name, ts, SUM(equity) AS total_equity
-        FROM filtered_equity
+        FROM equity_by_key
         GROUP BY strategy_name, ts
       ),
       latest AS (
@@ -411,9 +438,19 @@ export async function getStrategyLeaderboard(
 export async function getVenueSplit(): Promise<VenueSplitRow[]> {
   const rows = await query<VenueSplitRow>(
     `
-      WITH venue_equity AS (
+      WITH equity_by_key AS (
+        SELECT
+          COALESCE(e.venue, 'unknown') AS venue,
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          e.ts,
+          MAX(e.equity) AS equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        GROUP BY COALESCE(e.venue, 'unknown'), COALESCE(sess.strategy_name, 'unknown'), e.ts
+      ),
+      venue_equity AS (
         SELECT venue, ts, SUM(equity) AS total_equity
-        FROM equity_snapshots
+        FROM equity_by_key
         GROUP BY venue, ts
       ),
       latest AS (
@@ -512,6 +549,49 @@ export async function getLatestRebalanceStatus(windowMinutes = 90): Promise<Reba
 }
 
 /**
+ * Returns rebalance windows between two timestamps.
+ * A rebalance window is [UTC 00:00, UTC 00:00 + windowMinutes).
+ */
+export async function getRebalanceEventsBetween(
+  fromTs: string,
+  toTs: string,
+  windowMinutes = 90
+): Promise<RebalanceEvent[]> {
+  return query<RebalanceEvent>(
+    `
+      WITH bounds AS (
+        SELECT
+          date_trunc('day', $1::timestamptz) AS day_start,
+          date_trunc('day', $2::timestamptz) AS day_end
+      ),
+      days AS (
+        SELECT generate_series(day_start, day_end, interval '1 day') AS rebalance_ts
+        FROM bounds
+      ),
+      counts AS (
+        SELECT
+          d.rebalance_ts,
+          COUNT(f.*)::int AS fill_count
+        FROM days d
+        LEFT JOIN fills f
+          ON f.ts >= d.rebalance_ts
+         AND f.ts < d.rebalance_ts + make_interval(mins => $3::int)
+        GROUP BY d.rebalance_ts
+      )
+      SELECT
+        rebalance_ts,
+        fill_count,
+        (fill_count = 0) AS same_position
+      FROM counts
+      WHERE rebalance_ts >= $1
+        AND rebalance_ts <= $2
+      ORDER BY rebalance_ts ASC
+    `,
+    [fromTs, toTs, windowMinutes]
+  );
+}
+
+/**
  * PnL attribution - daily breakdown of price change, fees, and funding.
  */
 export async function getPnlAttribution(
@@ -527,15 +607,20 @@ export async function getPnlAttribution(
   const eqWhereSql = `WHERE ${eqWhere.join(' AND ')}`;
   const eqRows = await query<any>(
     `
-      WITH filtered_equity AS (
-        SELECT e.ts, e.equity
+      WITH equity_by_key AS (
+        SELECT
+          e.ts,
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${eqWhereSql}
+        GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
       equity_by_ts AS (
         SELECT ts, SUM(equity) AS total_equity
-        FROM filtered_equity
+        FROM equity_by_key
         GROUP BY ts
       ),
       daily_close AS (
