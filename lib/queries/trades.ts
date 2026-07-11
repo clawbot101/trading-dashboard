@@ -246,6 +246,7 @@ export async function getPositionLifecycles(
         SUM(
           CASE
             WHEN ABS(fwg.prev_running_qty) < 1e-12 THEN 1
+            WHEN fwg.prev_running_qty * fwg.running_qty < 0 THEN 1
             ELSE 0
           END
         ) OVER (
@@ -433,6 +434,7 @@ export async function getPositionLifecycleCount(
         SUM(
           CASE
             WHEN ABS(fwg.prev_running_qty) < 1e-12 THEN 1
+            WHEN fwg.prev_running_qty * fwg.running_qty < 0 THEN 1
             ELSE 0
           END
         ) OVER (
