@@ -10,30 +10,23 @@ interface EquityCurvePoint {
 
 interface EquityChartProps {
   data: EquityCurvePoint[];
-  markers?: Array<{ ts: string; text?: string; color?: string }>;
   height?: number;
 }
-const EMPTY_MARKERS: Array<{ ts: string; text?: string; color?: string }> = [];
 
 function toChartTime(ts: string): UTCTimestamp {
   return Math.floor(new Date(ts).getTime() / 1000) as UTCTimestamp;
 }
 
 // Chart component that uses lightweight-charts
-function ChartInner({ data, markers = EMPTY_MARKERS, height = 260 }: EquityChartProps) {
+function ChartInner({ data, height = 260 }: EquityChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<EquityCurvePoint[]>(data);
-  const markersRef = useRef<Array<{ ts: string; text?: string; color?: string }>>(markers);
 
   useEffect(() => {
     dataRef.current = data;
   }, [data]);
-
-  useEffect(() => {
-    markersRef.current = markers;
-  }, [markers]);
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
@@ -65,6 +58,10 @@ function ChartInner({ data, markers = EMPTY_MARKERS, height = 260 }: EquityChart
           secondsVisible: false,
         },
         crosshair: {
+          vertLine: {
+            visible: false,
+            labelVisible: false,
+          },
           horzLine: {
             visible: false,
             labelVisible: false,
@@ -93,17 +90,6 @@ function ChartInner({ data, markers = EMPTY_MARKERS, height = 260 }: EquityChart
         value: point.equity,
       }));
       lineSeries.setData(chartData);
-      if (typeof lineSeries.setMarkers === 'function') {
-        lineSeries.setMarkers(
-          markersRef.current.map((m) => ({
-            time: toChartTime(m.ts),
-            position: 'inBar',
-            color: m.color || '#22c55e',
-            shape: 'circle',
-            text: m.text || 'RB',
-          }))
-        );
-      }
       chart.timeScale().fitContent();
     });
 
@@ -138,27 +124,16 @@ function ChartInner({ data, markers = EMPTY_MARKERS, height = 260 }: EquityChart
     }));
 
     seriesRef.current.setData(chartData);
-    if (typeof seriesRef.current.setMarkers === 'function') {
-      seriesRef.current.setMarkers(
-        markers.map((m) => ({
-          time: toChartTime(m.ts),
-          position: 'inBar',
-          color: m.color || '#22c55e',
-          shape: 'circle',
-          text: m.text || 'RB',
-        }))
-      );
-    }
 
     if (chartRef.current) {
       chartRef.current.timeScale().fitContent();
     }
-  }, [data, markers]);
+  }, [data]);
 
   return <div ref={chartContainerRef} className="rounded" />;
 }
 
-export default function EquityChart({ data, markers = EMPTY_MARKERS, height = 260 }: EquityChartProps) {
+export default function EquityChart({ data, height = 260 }: EquityChartProps) {
   if (data.length < 2) {
     return (
       <div className="h-64 bg-hl-hover rounded flex items-center justify-center text-hl-muted text-sm">
@@ -167,5 +142,5 @@ export default function EquityChart({ data, markers = EMPTY_MARKERS, height = 26
     );
   }
 
-  return <ChartInner data={data} markers={markers} height={height} />;
+  return <ChartInner data={data} height={height} />;
 }
