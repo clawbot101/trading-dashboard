@@ -221,17 +221,9 @@ export default function OverviewPage() {
             </div>
           </div>
           {chartView === 'equity' ? (
-            <EquityChart
-              key={`eq-${timeRange}-${displayEquityCurve.length}`}
-              data={displayEquityCurve}
-              height={256}
-            />
+            <EquityChart data={displayEquityCurve} height={256} />
           ) : (
-            <PnlChart
-              key={`pnl-${timeRange}-${pnlCurve.length}-${stats?.initial_equity ?? 'na'}`}
-              data={pnlCurve}
-              height={256}
-            />
+            <PnlChart data={pnlCurve} height={256} />
           )}
           {chartView === 'pnl' && (
             <div className="mt-2 text-xs text-hl-muted">
