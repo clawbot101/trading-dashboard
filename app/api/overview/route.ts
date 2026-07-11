@@ -11,8 +11,6 @@ import {
   getVenueSplit,
   getRecentFills,
   getLatestRebalanceStatus,
-  getRebalanceEventsBetween,
-  timeRangeToTimestamps,
 } from '../../../lib/queries/overview';
 
 export const runtime = "nodejs";
@@ -33,7 +31,6 @@ export async function GET(req: NextRequest) {
     const strategy = q.strategy === 'all' ? undefined : q.strategy;
     const timeRange = q.range.toUpperCase();
     const filters = strategy ? [strategy] : undefined;
-    const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
     const [
       stats,
       equityCurve,
@@ -41,7 +38,6 @@ export async function GET(req: NextRequest) {
       venueSplit,
       recentFills,
       rebalanceStatus,
-      rebalanceEvents,
     ] = await Promise.all([
       getOverviewStats(timeRange, venue, filters),
       getEquityCurve(timeRange, venue, filters),
@@ -49,7 +45,6 @@ export async function GET(req: NextRequest) {
       getVenueSplit(),
       getRecentFills(20),
       getLatestRebalanceStatus(),
-      getRebalanceEventsBetween(from_ts, to_ts),
     ]);
 
     return NextResponse.json({
@@ -62,7 +57,6 @@ export async function GET(req: NextRequest) {
         venueSplit,
         recentFills,
         rebalanceStatus,
-        rebalanceEvents,
       },
       as_of_ts: new Date().toISOString(),
     });

@@ -49,6 +49,10 @@ function ChartInner({ data, markers = [], height = 260 }: PnlChartProps) {
           secondsVisible: false,
         },
         crosshair: {
+          vertLine: {
+            visible: false,
+            labelVisible: false,
+          },
           horzLine: {
             visible: false,
             labelVisible: false,

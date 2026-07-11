@@ -34,7 +34,6 @@ export default function OverviewPage() {
 
   const stats = data?.data?.stats;
   const equityCurve = data?.data?.equityCurve ?? EMPTY_LIST;
-  const rebalanceEvents = data?.data?.rebalanceEvents ?? EMPTY_LIST;
   const strategies = data?.data?.strategyLeaderboard ?? EMPTY_LIST;
   const venueSplit = data?.data?.venueSplit ?? EMPTY_LIST;
   const recentFills = data?.data?.recentFills ?? EMPTY_LIST;
@@ -56,16 +55,6 @@ export default function OverviewPage() {
       pnl: (p.equity || 0) - inceptionEquity,
     }));
   }, [displayEquityCurve, stats?.initial_equity]);
-
-  const rebalanceMarkers = useMemo(
-    () =>
-      rebalanceEvents.map((e: any) => ({
-        ts: e.rebalance_ts,
-        text: '',
-        color: e.same_position ? 'rgba(100,116,139,0.45)' : 'rgba(34,197,94,0.45)',
-      })),
-    [rebalanceEvents]
-  );
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -216,7 +205,7 @@ export default function OverviewPage() {
           {chartView === 'equity' ? (
             <EquityChart data={displayEquityCurve} height={256} />
           ) : (
-            <PnlChart data={pnlCurve} markers={rebalanceMarkers} height={256} />
+            <PnlChart data={pnlCurve} height={256} />
           )}
           {chartView === 'pnl' && (
             <div className="mt-2 text-xs text-hl-muted">
