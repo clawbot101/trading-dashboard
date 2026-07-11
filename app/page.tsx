@@ -61,8 +61,8 @@ export default function OverviewPage() {
     () =>
       rebalanceEvents.map((e: any) => ({
         ts: e.rebalance_ts,
-        text: e.same_position ? 'SAME' : 'RB',
-        color: e.same_position ? '#64748b' : '#22c55e',
+        text: '',
+        color: e.same_position ? 'rgba(100,116,139,0.45)' : 'rgba(34,197,94,0.45)',
       })),
     [rebalanceEvents]
   );
@@ -214,7 +214,7 @@ export default function OverviewPage() {
             </div>
           </div>
           {chartView === 'equity' ? (
-            <EquityChart data={displayEquityCurve} markers={rebalanceMarkers} height={256} />
+            <EquityChart data={displayEquityCurve} height={256} />
           ) : (
             <PnlChart data={pnlCurve} markers={rebalanceMarkers} height={256} />
           )}

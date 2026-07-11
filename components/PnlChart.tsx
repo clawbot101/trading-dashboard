@@ -48,6 +48,12 @@ function ChartInner({ data, markers = [], height = 260 }: PnlChartProps) {
           timeVisible: true,
           secondsVisible: false,
         },
+        crosshair: {
+          horzLine: {
+            visible: false,
+            labelVisible: false,
+          },
+        },
       });
 
       chartRef.current = chart;
