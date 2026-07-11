@@ -1,6 +1,18 @@
 -- Sample seed data for local development
 -- Run this after creating the schema tables
 
+-- Optional cash-flow table used to exclude deposits/withdrawals from strategy PnL.
+CREATE TABLE IF NOT EXISTS cash_flows (
+  flow_id BIGSERIAL PRIMARY KEY,
+  ts TIMESTAMPTZ NOT NULL,
+  session_id UUID NULL,
+  venue TEXT NULL,
+  account_id TEXT NULL,
+  flow_type TEXT NULL, -- deposit | withdrawal | transfer_in | transfer_out
+  amount NUMERIC NOT NULL,
+  note TEXT NULL
+);
+
 -- Trading sessions
 INSERT INTO trading_sessions (session_id, strategy_name, strategy_slot, venue, account_id, token_pair, started_at, ended_at, status, config_snapshot, initial_capital, strategy_version) VALUES
   ('a1b2c3d4-e5f6-7890-abcd-ef1234567890', 'xsec_momentum', 'slot1', 'Hyperliquid', 'acc_001', 'BTC-USDT', '2026-06-01 00:00:00+00', NULL, 'running', '{"lookback_days": 14, "rebalance_interval": "1d"}', 100000.00, 'v1.0'),

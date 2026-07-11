@@ -26,9 +26,14 @@ function ChartInner({ data, markers = [], height = 260 }: EquityChartProps) {
 
   useEffect(() => {
     if (!chartContainerRef.current) return;
+    let disposed = false;
+    let localChart: any = null;
 
     // Dynamic import for lightweight-charts
     import('lightweight-charts').then(({ createChart, ColorType }) => {
+      if (disposed || !chartContainerRef.current) return;
+      // StrictMode/dev can mount effects twice; clear any stale canvas layers.
+      chartContainerRef.current.innerHTML = '';
       const chart = createChart(chartContainerRef.current!, {
         width: chartContainerRef.current!.clientWidth,
         height: height,
@@ -56,14 +61,17 @@ function ChartInner({ data, markers = [], height = 260 }: EquityChartProps) {
         },
       });
 
+      localChart = chart;
       chartRef.current = chart;
 
-      const areaSeries = chart.addAreaSeries({
+      const areaSeries = chart.addAreaSeries();
+      areaSeries.applyOptions({
         topColor: 'rgba(34, 197, 94, 0.4)',
         bottomColor: 'rgba(34, 197, 94, 0.0)',
         lineColor: '#22c55e',
         lineWidth: 2,
         priceLineVisible: false,
+        priceLineColor: 'rgba(0,0,0,0)',
         lastValueVisible: false,
       });
 
@@ -100,7 +108,12 @@ function ChartInner({ data, markers = [], height = 260 }: EquityChartProps) {
     window.addEventListener('resize', handleResize);
 
     return () => {
+      disposed = true;
       window.removeEventListener('resize', handleResize);
+      if (localChart) {
+        localChart.remove();
+        localChart = null;
+      }
       if (chartRef.current) {
         chartRef.current.remove();
         chartRef.current = null;

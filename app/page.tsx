@@ -34,6 +34,7 @@ export default function OverviewPage() {
 
   const stats = data?.data?.stats;
   const equityCurve = data?.data?.equityCurve ?? EMPTY_LIST;
+  const cashFlowEvents = data?.data?.cashFlowEvents ?? EMPTY_LIST;
   const strategies = data?.data?.strategyLeaderboard ?? EMPTY_LIST;
   const venueSplit = data?.data?.venueSplit ?? EMPTY_LIST;
   const recentFills = data?.data?.recentFills ?? EMPTY_LIST;
@@ -50,11 +51,25 @@ export default function OverviewPage() {
     if (!displayEquityCurve.length) return [];
     // Since-inception baseline: match account's initial equity (e.g. ~999 at start).
     const inceptionEquity = stats?.initial_equity ?? displayEquityCurve[0]?.equity ?? 0;
-    return displayEquityCurve.map((p: any) => ({
-      ts: p.ts,
-      pnl: (p.equity || 0) - inceptionEquity,
-    }));
-  }, [displayEquityCurve, stats?.initial_equity]);
+    const sortedFlows = [...cashFlowEvents]
+      .filter((e: any) => e?.ts != null && e?.amount != null)
+      .sort((a: any, b: any) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+
+    let flowIdx = 0;
+    let cumulativeCashFlow = 0;
+
+    return displayEquityCurve.map((p: any) => {
+      const pointTs = new Date(p.ts).getTime();
+      while (flowIdx < sortedFlows.length && new Date(sortedFlows[flowIdx].ts).getTime() <= pointTs) {
+        cumulativeCashFlow += Number(sortedFlows[flowIdx].amount || 0);
+        flowIdx += 1;
+      }
+      return {
+        ts: p.ts,
+        pnl: (p.equity || 0) - inceptionEquity - cumulativeCashFlow,
+      };
+    });
+  }, [displayEquityCurve, stats?.initial_equity, cashFlowEvents]);
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -311,7 +326,7 @@ export default function OverviewPage() {
 
       {/* Footer */}
       <div className="mt-6 text-xs text-hl-muted">
-        Last update: {formatTime(asOf)} | Returns assume no mid-period deposits/withdrawals
+        Last update: {formatTime(asOf)} | PnL excludes deposits/withdrawals when cash flow data is provided
       </div>
     </div>
   );

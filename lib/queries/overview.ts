@@ -22,6 +22,8 @@ export interface OverviewStats {
   gross_exposure: number;
   equity_24h_ago: number;
   initial_equity: number;
+  initial_equity_ts: string | null;
+  cash_flow_period: number;
 }
 
 export interface EquityCurvePoint {
@@ -66,6 +68,11 @@ export interface RebalanceEvent {
   rebalance_ts: string;
   fill_count: number;
   same_position: boolean;
+}
+
+export interface CashFlowEvent {
+  ts: string;
+  amount: number;
 }
 
 interface QueryFilters {
@@ -206,6 +213,7 @@ export async function getOverviewStats(
       )
       SELECT
         COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
+        (SELECT ts FROM first_point) AS initial_equity_ts,
         COALESCE((SELECT total_equity FROM first_point), 0) AS initial_equity,
         COALESCE(
           (SELECT total_equity FROM baseline_point),
@@ -251,11 +259,12 @@ export async function getOverviewStats(
   );
 
   const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
+  const cashFlowPeriod = await getCashFlowDelta(from_ts, to_ts, venue, strategies);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
   const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
   const equityPeriodAgo = Number(equityRow?.equity_period_ago ?? equityNow);
-  const pnlPeriod = equityNow - equityPeriodAgo;
+  const pnlPeriod = equityNow - equityPeriodAgo - cashFlowPeriod;
   const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
 
   return {
@@ -271,6 +280,8 @@ export async function getOverviewStats(
     gross_exposure: Number(stateRow?.gross_exposure ?? 0),
     equity_24h_ago: equityPeriodAgo,
     initial_equity: initialEquity,
+    initial_equity_ts: equityRow?.initial_equity_ts ?? null,
+    cash_flow_period: cashFlowPeriod,
   };
 }
 
@@ -592,6 +603,43 @@ export async function getRebalanceEventsBetween(
 }
 
 /**
+ * Returns signed cash-flow events (deposits positive, withdrawals negative).
+ * Table is optional; returns [] when cash_flows does not exist.
+ */
+export async function getCashFlowEvents(
+  fromTs: string,
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<CashFlowEvent[]> {
+  if (!(await hasCashFlowsTable())) return [];
+
+  const options: QueryFilters = { venue, strategies };
+  const filters = buildFilters(3, options, true, 'cf');
+  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+
+  return query<CashFlowEvent>(
+    `
+      SELECT
+        cf.ts,
+        CASE
+          WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
+          WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in') THEN ABS(COALESCE(cf.amount, 0))
+          WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out') THEN -ABS(COALESCE(cf.amount, 0))
+          ELSE COALESCE(cf.amount, 0)
+        END AS amount
+      FROM cash_flows cf
+      LEFT JOIN trading_sessions sess ON cf.session_id = sess.session_id
+      WHERE cf.ts > $1
+        AND cf.ts <= $2
+        ${whereSql}
+      ORDER BY cf.ts ASC
+    `,
+    [fromTs, toTs, ...filters.params]
+  );
+}
+
+/**
  * PnL attribution - daily breakdown of price change, fees, and funding.
  */
 export async function getPnlAttribution(
@@ -728,6 +776,55 @@ async function getFundingDelta(
   );
 
   return Number(row?.funding_delta ?? 0);
+}
+
+let cashFlowsTableExistsCache: boolean | null = null;
+
+async function hasCashFlowsTable(): Promise<boolean> {
+  if (cashFlowsTableExistsCache != null) return cashFlowsTableExistsCache;
+  const row = await queryOne<{ exists: boolean }>(
+    `SELECT to_regclass('public.cash_flows') IS NOT NULL AS exists`
+  );
+  cashFlowsTableExistsCache = Boolean(row?.exists);
+  return cashFlowsTableExistsCache;
+}
+
+async function getCashFlowDelta(
+  fromTs: string,
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<number> {
+  if (!(await hasCashFlowsTable())) return 0;
+
+  const options: QueryFilters = { venue, strategies };
+  const filters = buildFilters(3, options, true, 'cf');
+  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+
+  const row = await queryOne<{ net_cash_flow: number }>(
+    `
+      SELECT
+        COALESCE(
+          SUM(
+            CASE
+              WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
+              WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in') THEN ABS(COALESCE(cf.amount, 0))
+              WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out') THEN -ABS(COALESCE(cf.amount, 0))
+              ELSE COALESCE(cf.amount, 0)
+            END
+          ),
+          0
+        ) AS net_cash_flow
+      FROM cash_flows cf
+      LEFT JOIN trading_sessions sess ON cf.session_id = sess.session_id
+      WHERE cf.ts > $1
+        AND cf.ts <= $2
+        ${whereSql}
+    `,
+    [fromTs, toTs, ...filters.params]
+  );
+
+  return Number(row?.net_cash_flow ?? 0);
 }
 
 async function getFundingDeltasByDay(

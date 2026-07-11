@@ -11,6 +11,7 @@ import {
   getVenueSplit,
   getRecentFills,
   getLatestRebalanceStatus,
+  getCashFlowEvents,
 } from '../../../lib/queries/overview';
 
 export const runtime = "nodejs";
@@ -46,6 +47,9 @@ export async function GET(req: NextRequest) {
       getRecentFills(20),
       getLatestRebalanceStatus(),
     ]);
+    const cashFlowStartTs = stats?.initial_equity_ts ?? equityCurve?.[0]?.ts ?? '2000-01-01T00:00:00Z';
+    const cashFlowEndTs = equityCurve?.[equityCurve.length - 1]?.ts ?? new Date().toISOString();
+    const cashFlowEvents = await getCashFlowEvents(cashFlowStartTs, cashFlowEndTs, venue, filters);
 
     return NextResponse.json({
       ok: true,
@@ -57,6 +61,7 @@ export async function GET(req: NextRequest) {
         venueSplit,
         recentFills,
         rebalanceStatus,
+        cashFlowEvents,
       },
       as_of_ts: new Date().toISOString(),
     });
