@@ -286,7 +286,15 @@ export async function getOverviewStats(
 
   const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
   const cashFlowPeriod = await getCashFlowDelta(from_ts, to_ts, venue, strategies);
-  const realizedPnl = await getRealizedPnlNet(from_ts, to_ts, venue, strategies, fundingDelta);
+  const realizedFromTs = equityRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
+  const realizedFundingDelta = await getFundingDelta(realizedFromTs, to_ts, venue, strategies);
+  const realizedPnl = await getRealizedPnlNet(
+    realizedFromTs,
+    to_ts,
+    venue,
+    strategies,
+    realizedFundingDelta
+  );
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
   const initialEquity = Number(equityRow?.initial_equity ?? equityNow);

@@ -168,17 +168,15 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {/* Top row: 6 stat cards */}
+      {/* Top row: stat cards */}
       {!isLoading && stats && (
-        <div className="grid grid-cols-6 gap-3 mb-6">
+        <div className="grid grid-cols-5 gap-3 mb-6">
           <StatCard label="Total Equity" value={formatUsd(stats.total_equity)} />
           <StatCard
-            label={`${timeRange} PnL`}
-            value={formatPnl(stats.pnl_24h)}
-            delta={formatPct(stats.pnl_24h_pct)}
+            label="Unrealized PnL"
+            value={formatPnl(stats.total_unrealized_pnl)}
             pnl
           />
-          <StatCard label="Unrealized PnL" value={formatPnl(stats.total_unrealized_pnl)} pnl />
           <StatCard label="Realized PnL" value={formatPnl(stats.total_realized_pnl)} pnl />
           <StatCard label="Max Drawdown" value={formatPct(-stats.max_drawdown_pct)} negative />
           <StatCard
