@@ -64,27 +64,26 @@ function ChartInner({ data, markers = [], height = 260 }: EquityChartProps) {
       localChart = chart;
       chartRef.current = chart;
 
-      const areaSeries = chart.addAreaSeries();
-      areaSeries.applyOptions({
-        topColor: 'rgba(34, 197, 94, 0.4)',
-        bottomColor: 'rgba(34, 197, 94, 0.0)',
-        lineColor: '#22c55e',
+      const lineSeries = chart.addLineSeries();
+      lineSeries.applyOptions({
+        color: '#22c55e',
         lineWidth: 2,
         priceLineVisible: false,
         priceLineColor: 'rgba(0,0,0,0)',
         lastValueVisible: false,
+        crosshairMarkerVisible: false,
       });
 
-      seriesRef.current = areaSeries;
+      seriesRef.current = lineSeries;
 
       // Set initial data
       const chartData = data.map((point) => ({
         time: toChartTime(point.ts),
         value: point.equity,
       }));
-      areaSeries.setData(chartData);
-      if (typeof areaSeries.setMarkers === 'function') {
-        areaSeries.setMarkers(
+      lineSeries.setData(chartData);
+      if (typeof lineSeries.setMarkers === 'function') {
+        lineSeries.setMarkers(
           markers.map((m) => ({
             time: toChartTime(m.ts),
             position: 'inBar',

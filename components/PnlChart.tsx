@@ -62,18 +62,29 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
       localChart = chart;
       chartRef.current = chart;
 
-      const lineSeries = chart.addLineSeries();
-      lineSeries.applyOptions({
-        color: '#22c55e',
+      const baselineSeries = chart.addBaselineSeries({
+        baseValue: { type: 'price', price: 0 },
+      });
+      baselineSeries.applyOptions({
+        topLineColor: '#22c55e',
+        topFillColor1: 'rgba(34, 197, 94, 0.35)',
+        topFillColor2: 'rgba(34, 197, 94, 0.0)',
+        bottomLineColor: '#ef4444',
+        bottomFillColor1: 'rgba(239, 68, 68, 0.35)',
+        bottomFillColor2: 'rgba(239, 68, 68, 0.0)',
         lineWidth: 2,
         priceLineVisible: false,
         priceLineColor: 'rgba(0,0,0,0)',
         lastValueVisible: false,
-        crosshairMarkerVisible: false,
+        priceFormat: {
+          type: 'price',
+          precision: 2,
+          minMove: 0.01,
+        },
       });
 
-      seriesRef.current = lineSeries;
-      lineSeries.setData(
+      seriesRef.current = baselineSeries;
+      baselineSeries.setData(
         data.map((point) => ({
           time: toChartTime(point.ts),
           value: point.pnl,

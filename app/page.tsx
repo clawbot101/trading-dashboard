@@ -55,17 +55,23 @@ export default function OverviewPage() {
     let flowIdx = 0;
     let cumulativeCashFlow = 0;
 
-    return displayEquityCurve.map((p: any) => {
+    const out: Array<{ ts: string; pnl: number }> = [];
+    for (const p of displayEquityCurve) {
       const pointTs = new Date(p.ts).getTime();
+      const equityValue = Number(p.equity);
+      if (!Number.isFinite(pointTs) || !Number.isFinite(equityValue)) continue;
+
       while (flowIdx < sortedFlows.length && new Date(sortedFlows[flowIdx].ts).getTime() <= pointTs) {
         cumulativeCashFlow += Number(sortedFlows[flowIdx].amount || 0);
         flowIdx += 1;
       }
-      return {
+
+      out.push({
         ts: p.ts,
-        pnl: (p.equity || 0) - inceptionEquity - cumulativeCashFlow,
-      };
-    });
+        pnl: equityValue - inceptionEquity - cumulativeCashFlow,
+      });
+    }
+    return out;
   }, [displayEquityCurve, stats?.initial_equity, cashFlowEvents]);
 
   // Data freshness indicator
@@ -343,8 +349,11 @@ function normalizeEquityCurve(points: any[]) {
   const map = new Map<string, any>();
   for (const p of points) {
     if (!p?.ts) continue;
+    const ts = new Date(p.ts).toISOString();
+    const equity = Number(p.equity);
+    if (!Number.isFinite(equity)) continue;
     // Keep latest value for duplicated timestamp keys.
-    map.set(new Date(p.ts).toISOString(), p);
+    map.set(ts, { ts, equity });
   }
 
   return Array.from(map.values()).sort(
