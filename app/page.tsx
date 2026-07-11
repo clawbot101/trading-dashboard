@@ -62,6 +62,39 @@ export default function OverviewPage() {
     return { text: 'Just now', seconds };
   }, [asOf]);
 
+  const recentActivities = useMemo(() => {
+    const activities: Array<
+      | {
+          kind: 'rebalance_same_position';
+          ts: string;
+        }
+      | {
+          kind: 'fill';
+          ts: string;
+          fill: any;
+        }
+    > = [];
+
+    if (rebalanceStatus?.same_position && rebalanceStatus?.rebalance_ts) {
+      activities.push({
+        kind: 'rebalance_same_position',
+        ts: rebalanceStatus.rebalance_ts,
+      });
+    }
+
+    for (const f of recentFills) {
+      if (!f?.ts) continue;
+      activities.push({
+        kind: 'fill',
+        ts: f.ts,
+        fill: f,
+      });
+    }
+
+    activities.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+    return activities.slice(0, 10);
+  }, [recentFills, rebalanceStatus]);
+
   return (
     <div className="px-4 py-6 max-w-7xl mx-auto">
       {/* Controls */}
@@ -226,39 +259,41 @@ export default function OverviewPage() {
       <div className="panel p-4">
         <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
         <div className="space-y-1">
-          {rebalanceStatus?.same_position && (
-            <div className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm border border-hl-border">
-              <div className="flex items-center gap-2">
-                <span className="text-hl-muted">{formatTimeAgo(rebalanceStatus.rebalance_ts)}</span>
-                <span className="badge-live">Rebalance</span>
-                <span className="font-medium text-hl-secondary">
-                  Same position (no open/close at UTC 00:00 window)
-                </span>
-              </div>
-              <div className="font-num text-hl-muted">
-                UTC {formatUtcHm(rebalanceStatus.rebalance_ts)}
-              </div>
-            </div>
-          )}
-          {recentFills.length > 0 ? (
-            recentFills.slice(0, 10).map((f: any) => (
-              <div
-                key={`${f.ts}-${f.symbol}`}
-                className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-hl-muted">{formatTimeAgo(f.ts)}</span>
-                  <span className="font-medium">{f.strategy_name}</span>
-                  <span className={`badge-${f.side.toLowerCase()}`}>{f.side}</span>
-                  <span>{f.symbol}</span>
+          {recentActivities.length > 0 ? (
+            recentActivities.map((a: any) =>
+              a.kind === 'rebalance_same_position' ? (
+                <div
+                  key={`rebalance-${a.ts}`}
+                  className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm border border-hl-border"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-hl-muted">{formatTimeAgo(a.ts)}</span>
+                    <span className="badge-live">Rebalance</span>
+                    <span className="font-medium text-hl-secondary">
+                      Same position (no open/close at UTC 00:00 window)
+                    </span>
+                  </div>
+                  <div className="font-num text-hl-muted">UTC {formatUtcHm(a.ts)}</div>
                 </div>
-                <div className="font-num">
-                  {f.fill_qty}@{formatPrice(f.fill_price, 2)}
+              ) : (
+                <div
+                  key={`${a.fill.ts}-${a.fill.symbol}-${a.fill.side}-${a.fill.fill_qty}`}
+                  className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-hl-muted">{formatTimeAgo(a.fill.ts)}</span>
+                    <span className="font-medium">{a.fill.strategy_name}</span>
+                    <span className={`badge-${a.fill.side.toLowerCase()}`}>{a.fill.side}</span>
+                    <span>{a.fill.symbol}</span>
+                  </div>
+                  <div className="font-num">
+                    {a.fill.fill_qty}@{formatPrice(a.fill.fill_price, 2)}
+                  </div>
                 </div>
-              </div>
-            ))
+              )
+            )
           ) : (
-            <div className="text-hl-muted text-sm py-4">No recent fills</div>
+            <div className="text-hl-muted text-sm py-4">No recent activity</div>
           )}
         </div>
       </div>

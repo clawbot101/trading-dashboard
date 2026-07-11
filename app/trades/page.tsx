@@ -2,7 +2,7 @@
 
 import useSWR from 'swr';
 import Link from 'next/link';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 
 const fetcher = async (url: string) => {
   const r = await fetch(url);
@@ -16,7 +16,7 @@ const fetcher = async (url: string) => {
 const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
 
 export default function TradesPage() {
-  const [tab, setTab] = useState<'fills' | 'orders' | 'lifecycle'>('fills');
+  const [tab, setTab] = useState<'fills' | 'orders' | 'lifecycle'>('lifecycle');
   const [timeRange, setTimeRange] = useState('ALL');
   const [page, setPage] = useState(1);
   const [paused, setPaused] = useState(false);
@@ -54,6 +54,17 @@ export default function TradesPage() {
   const orders = ordersData?.data?.orderEvents || [];
   const totalOrderRows = ordersData?.data?.totalRows || 0;
   const lifecycles = lifecycleData?.data?.lifecycles || [];
+  const sortedLifecycles = useMemo(() => {
+    return [...lifecycles].sort((a: any, b: any) => {
+      const aOpen = a?.status === 'OPEN' ? 1 : 0;
+      const bOpen = b?.status === 'OPEN' ? 1 : 0;
+      if (aOpen !== bOpen) return bOpen - aOpen; // OPEN first
+
+      const aTs = new Date(a?.close_time || a?.open_time || 0).getTime();
+      const bTs = new Date(b?.close_time || b?.open_time || 0).getTime();
+      return bTs - aTs; // latest first
+    });
+  }, [lifecycles]);
   const totalLifecycleRows = lifecycleData?.data?.totalRows || 0;
   const asOf = tab === 'orders' ? ordersData?.as_of_ts : tab === 'lifecycle' ? lifecycleData?.as_of_ts : data?.as_of_ts;
 
@@ -109,6 +120,16 @@ export default function TradesPage() {
       <div className="flex items-center gap-4 mb-4">
         <div className="flex items-center gap-1">
           <button
+            onClick={() => { setTab('lifecycle'); setPage(1); }}
+            className={`px-3 py-1 text-sm rounded ${
+              tab === 'lifecycle'
+                ? 'bg-hl-accent text-hl-bg'
+                : 'bg-hl-panel text-hl-secondary'
+            }`}
+          >
+            Position History
+          </button>
+          <button
             onClick={() => { setTab('fills'); setPage(1); }}
             className={`px-3 py-1 text-sm rounded ${
               tab === 'fills'
@@ -127,16 +148,6 @@ export default function TradesPage() {
             }`}
           >
             Order Events
-          </button>
-          <button
-            onClick={() => { setTab('lifecycle'); setPage(1); }}
-            className={`px-3 py-1 text-sm rounded ${
-              tab === 'lifecycle'
-                ? 'bg-hl-accent text-hl-bg'
-                : 'bg-hl-panel text-hl-secondary'
-            }`}
-          >
-            Position History
           </button>
         </div>
 
@@ -300,8 +311,8 @@ export default function TradesPage() {
               </tr>
             </thead>
             <tbody>
-              {lifecycles.length > 0 ? (
-                lifecycles.map((row: any) => (
+              {sortedLifecycles.length > 0 ? (
+                sortedLifecycles.map((row: any) => (
                   <tr key={row.lifecycle_id}>
                     <td className="text-xs text-hl-muted">{formatTime(row.open_time)}</td>
                     <td className="text-xs text-hl-muted">{formatTime(row.close_time)}</td>
