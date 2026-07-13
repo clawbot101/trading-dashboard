@@ -286,15 +286,7 @@ export async function getOverviewStats(
 
   const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
   const cashFlowPeriod = await getCashFlowDelta(from_ts, to_ts, venue, strategies);
-  const realizedFromTs = equityRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
-  const realizedFundingDelta = await getFundingDelta(realizedFromTs, to_ts, venue, strategies);
-  const realizedPnl = await getRealizedPnlNet(
-    realizedFromTs,
-    to_ts,
-    venue,
-    strategies,
-    realizedFundingDelta
-  );
+  const adjustedPnl = await getAdjustedPnlSummary(to_ts, venue, strategies);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
   const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
@@ -306,8 +298,8 @@ export async function getOverviewStats(
     total_equity: equityNow,
     pnl_24h: pnlPeriod,
     pnl_24h_pct: pnlPeriodPct,
-    total_unrealized_pnl: Number(stateRow?.total_unrealized_pnl ?? 0),
-    total_realized_pnl: realizedPnl,
+    total_unrealized_pnl: adjustedPnl.unrealized_pnl,
+    total_realized_pnl: adjustedPnl.realized_pnl,
     total_funding: fundingDelta,
     total_margin: Number(stateRow?.total_margin ?? 0),
     max_drawdown_pct: 0,
@@ -320,40 +312,208 @@ export async function getOverviewStats(
   };
 }
 
-async function getRealizedPnlNet(
-  fromTs: string,
+async function getAdjustedPnlSummary(
   toTs: string,
   venue?: string,
-  strategies?: string[],
-  fundingDeltaOverride?: number
-): Promise<number> {
-  const options: QueryFilters = { venue, strategies };
-  const filters = buildFilters(3, options, true, 'f');
-  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
-  const hasRealizedPnl = await fillsHasColumn('realized_pnl');
+  strategies?: string[]
+): Promise<{ realized_pnl: number; unrealized_pnl: number }> {
+  const params: unknown[] = [toTs];
+  let venueParamIdx: number | null = null;
+  if (!isAllValue(venue)) {
+    params.push(venue);
+    venueParamIdx = params.length;
+  }
+  const strategiesFilter = normalizeStrategies(strategies);
+  let strategiesParamIdx: number | null = null;
+  if (strategiesFilter?.length) {
+    params.push(strategiesFilter);
+    strategiesParamIdx = params.length;
+  }
 
-  const row = await queryOne<{ closed_realized: number; total_fees: number }>(
-    `
+  const fillWhereParts: string[] = [];
+  const fundingWhereParts: string[] = [];
+  const stateWhereParts: string[] = [];
+  if (venueParamIdx != null) {
+    fillWhereParts.push(`f.venue = $${venueParamIdx}`);
+    fundingWhereParts.push(`fp.venue = $${venueParamIdx}`);
+    stateWhereParts.push(`ts.venue = $${venueParamIdx}`);
+  }
+  if (strategiesParamIdx != null) {
+    fillWhereParts.push(`sess.strategy_name = ANY($${strategiesParamIdx}::text[])`);
+    fundingWhereParts.push(`sess.strategy_name = ANY($${strategiesParamIdx}::text[])`);
+    stateWhereParts.push(`ts.strategy_name = ANY($${strategiesParamIdx}::text[])`);
+  }
+
+  const fillWhereSql = fillWhereParts.length ? `AND ${fillWhereParts.join(' AND ')}` : '';
+  const fundingWhereSql = fundingWhereParts.length ? `AND ${fundingWhereParts.join(' AND ')}` : '';
+  const stateWhereExtra = stateWhereParts.length ? `AND ${stateWhereParts.join(' AND ')}` : '';
+
+  const sql = `
+    WITH fills_with_session AS (
       SELECT
-        COALESCE(SUM(${hasRealizedPnl ? 'COALESCE(f.realized_pnl, 0)' : '0'}), 0) AS closed_realized,
-        COALESCE(SUM(ABS(COALESCE(f.fee, 0))), 0) AS total_fees
+        f.fill_id,
+        f.ts,
+        f.venue,
+        f.symbol,
+        COALESCE(sess.strategy_name, '__unknown__') AS strategy_name,
+        LOWER(f.side) AS side,
+        COALESCE(f.fill_qty, 0) AS fill_qty,
+        COALESCE(f.fill_price, 0) AS fill_price,
+        COALESCE(f.fee, 0) AS fee,
+        CASE WHEN LOWER(f.side) = 'buy' THEN COALESCE(f.fill_qty, 0) ELSE -COALESCE(f.fill_qty, 0) END AS signed_qty
       FROM fills f
       LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
-      WHERE f.ts > $2
-        AND f.ts <= $1
-        ${whereSql}
-    `,
-    [toTs, fromTs, ...filters.params]
-  );
+      WHERE f.ts <= $1
+      ${fillWhereSql}
+    ),
+    fills_with_running AS (
+      SELECT
+        fws.*,
+        SUM(fws.signed_qty) OVER (
+          PARTITION BY fws.strategy_name, fws.venue, fws.symbol
+          ORDER BY fws.ts, fws.fill_id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS running_qty
+      FROM fills_with_session fws
+    ),
+    fills_with_groups AS (
+      SELECT
+        fwr.*,
+        LAG(fwr.running_qty, 1, 0) OVER (
+          PARTITION BY fwr.strategy_name, fwr.venue, fwr.symbol
+          ORDER BY fwr.ts, fwr.fill_id
+        ) AS prev_running_qty
+      FROM fills_with_running fwr
+    ),
+    lifecycle_tagged AS (
+      SELECT
+        fwg.*,
+        SUM(
+          CASE
+            WHEN ABS(fwg.prev_running_qty) < 1e-12 THEN 1
+            WHEN fwg.prev_running_qty * fwg.running_qty < 0 THEN 1
+            ELSE 0
+          END
+        ) OVER (
+          PARTITION BY fwg.strategy_name, fwg.venue, fwg.symbol
+          ORDER BY fwg.ts, fwg.fill_id
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS lifecycle_seq
+      FROM fills_with_groups fwg
+    ),
+    lifecycle_agg AS (
+      SELECT
+        lt.strategy_name,
+        lt.venue,
+        lt.symbol,
+        lt.lifecycle_seq,
+        SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty * lt.fill_price ELSE 0 END) AS buy_notional,
+        SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty ELSE 0 END) AS buy_qty,
+        SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty * lt.fill_price ELSE 0 END) AS sell_notional,
+        SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END) AS sell_qty,
+        SUM(lt.fee) AS total_fee,
+        SUM(lt.signed_qty) AS net_qty,
+        MIN(lt.ts) AS open_time,
+        MAX(lt.ts) AS last_fill_ts,
+        CASE WHEN SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty ELSE 0 END) > 0
+          THEN SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty * lt.fill_price ELSE 0 END) /
+               SUM(CASE WHEN lt.side = 'buy' THEN lt.fill_qty ELSE 0 END)
+          ELSE NULL END AS avg_buy_price,
+        CASE WHEN SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END) > 0
+          THEN SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty * lt.fill_price ELSE 0 END) /
+               SUM(CASE WHEN lt.side = 'sell' THEN lt.fill_qty ELSE 0 END)
+          ELSE NULL END AS avg_sell_price
+      FROM lifecycle_tagged lt
+      GROUP BY lt.strategy_name, lt.venue, lt.symbol, lt.lifecycle_seq
+    ),
+    latest_state AS (
+      SELECT DISTINCT ON (ts.strategy_name, ts.venue, ts.symbol)
+        ts.strategy_name,
+        ts.venue,
+        ts.symbol,
+        ts.position_qty,
+        ts.avg_entry_price,
+        ts.mark_price
+      FROM trading_state ts
+      WHERE 1=1
+      ${stateWhereExtra}
+      ORDER BY ts.strategy_name, ts.venue, ts.symbol, ts.updated_at DESC
+    ),
+    funding_deltas AS (
+      SELECT
+        fp.ts,
+        fp.venue,
+        fp.symbol,
+        COALESCE(sess.strategy_name, '__unknown__') AS strategy_name,
+        COALESCE(fp.payment_amount, 0) -
+        COALESCE(
+          LAG(COALESCE(fp.payment_amount, 0)) OVER (
+            PARTITION BY COALESCE(sess.strategy_name, '__unknown__'), fp.venue, fp.symbol
+            ORDER BY fp.ts
+          ),
+          0
+        ) AS funding_delta
+      FROM funding_payments fp
+      LEFT JOIN trading_sessions sess ON fp.session_id = sess.session_id
+      WHERE fp.ts <= $1
+      ${fundingWhereSql}
+    ),
+    funding_agg AS (
+      SELECT
+        la.strategy_name,
+        la.venue,
+        la.symbol,
+        la.lifecycle_seq,
+        COALESCE(SUM(fd.funding_delta), 0) AS total_funding
+      FROM lifecycle_agg la
+      LEFT JOIN funding_deltas fd
+        ON fd.strategy_name = la.strategy_name
+       AND fd.venue = la.venue
+       AND fd.symbol = la.symbol
+       AND fd.ts >= la.open_time
+       AND fd.ts <= CASE WHEN ABS(la.net_qty) < 1e-12 THEN la.last_fill_ts ELSE $1::timestamptz END
+      GROUP BY la.strategy_name, la.venue, la.symbol, la.lifecycle_seq
+    ),
+    lifecycle_pnl AS (
+      SELECT
+        CASE WHEN ABS(la.net_qty) < 1e-12 THEN 'CLOSED' ELSE 'OPEN' END AS status,
+        (
+          CASE
+            WHEN ABS(la.net_qty) < 1e-12 THEN (la.sell_notional - la.buy_notional)
+            WHEN la.net_qty > 0 THEN
+              (
+                COALESCE(ls.mark_price, ls.avg_entry_price, la.avg_buy_price, la.avg_sell_price, 0) -
+                COALESCE(ls.avg_entry_price, la.avg_buy_price, la.avg_sell_price, 0)
+              ) * ABS(la.net_qty)
+            ELSE
+              (
+                COALESCE(ls.avg_entry_price, la.avg_sell_price, la.avg_buy_price, 0) -
+                COALESCE(ls.mark_price, ls.avg_entry_price, la.avg_sell_price, la.avg_buy_price, 0)
+              ) * ABS(la.net_qty)
+          END
+        ) + COALESCE(fa.total_funding, 0) - la.total_fee AS net_pnl
+      FROM lifecycle_agg la
+      LEFT JOIN funding_agg fa
+        ON la.strategy_name = fa.strategy_name
+       AND la.venue = fa.venue
+       AND la.symbol = fa.symbol
+       AND la.lifecycle_seq = fa.lifecycle_seq
+      LEFT JOIN latest_state ls
+        ON ls.strategy_name = la.strategy_name
+       AND ls.venue = la.venue
+       AND ls.symbol = la.symbol
+    )
+    SELECT
+      COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END), 0) AS realized_pnl,
+      COALESCE(SUM(CASE WHEN status = 'OPEN' THEN net_pnl ELSE 0 END), 0) AS unrealized_pnl
+    FROM lifecycle_pnl
+  `;
 
-  const closedRealized = Number(row?.closed_realized ?? 0);
-  const totalFees = Number(row?.total_fees ?? 0);
-  const fundingDelta =
-    fundingDeltaOverride == null
-      ? await getFundingDelta(fromTs, toTs, venue, strategies)
-      : fundingDeltaOverride;
-
-  return closedRealized + fundingDelta - totalFees;
+  const row = await queryOne<{ realized_pnl: number; unrealized_pnl: number }>(sql, params);
+  return {
+    realized_pnl: Number(row?.realized_pnl ?? 0),
+    unrealized_pnl: Number(row?.unrealized_pnl ?? 0),
+  };
 }
 
 /**
