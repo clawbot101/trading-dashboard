@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { UTCTimestamp } from 'lightweight-charts';
 
 interface PnlCurvePoint {
@@ -30,12 +30,18 @@ function toUniqueSecondData(points: PnlCurvePoint[]) {
     .map(([sec, val]) => ({ time: sec as UTCTimestamp, value: val }));
 }
 
+function formatPnl(n: number): string {
+  const sign = n >= 0 ? '+' : '';
+  return `${sign}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function ChartInner({ data, height = 260 }: PnlChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<PnlCurvePoint[]>(data);
   const hasFittedRef = useRef(false);
+  const [hoverValue, setHoverValue] = useState<number | null>(null);
 
   useEffect(() => {
     dataRef.current = data;
@@ -106,6 +112,25 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
       baselineSeries.setData(toUniqueSecondData(dataRef.current));
       chart.timeScale().fitContent();
       hasFittedRef.current = true;
+
+      const handleCrosshairMove = (param: any) => {
+        const prices = param?.seriesPrices;
+        if (!prices || !seriesRef.current || !param?.point || !param?.time) {
+          setHoverValue(null);
+          return;
+        }
+        const raw = typeof prices.get === 'function' ? prices.get(seriesRef.current) : undefined;
+        if (typeof raw === 'number' && Number.isFinite(raw)) {
+          setHoverValue(raw);
+          return;
+        }
+        if (raw && typeof raw === 'object' && Number.isFinite(Number((raw as any).close))) {
+          setHoverValue(Number((raw as any).close));
+          return;
+        }
+        setHoverValue(null);
+      };
+      chart.subscribeCrosshairMove(handleCrosshairMove);
     });
 
     const handleResize = () => {
@@ -121,6 +146,7 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
       window.removeEventListener('resize', handleResize);
       const chartToRemove = localChart || chartRef.current;
       if (chartToRemove) chartToRemove.remove();
+      setHoverValue(null);
       localChart = null;
       chartRef.current = null;
       seriesRef.current = null;
@@ -136,7 +162,16 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
     }
   }, [data]);
 
-  return <div ref={chartContainerRef} className="rounded" />;
+  return (
+    <div className="relative">
+      {hoverValue != null && (
+        <div className="absolute left-2 top-2 z-10 rounded bg-hl-bg/80 px-2 py-1 text-xs font-num text-hl-text pointer-events-none">
+          {formatPnl(hoverValue)}
+        </div>
+      )}
+      <div ref={chartContainerRef} className="rounded" />
+    </div>
+  );
 }
 
 export default function PnlChart({ data, height = 260 }: PnlChartProps) {
