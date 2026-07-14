@@ -530,6 +530,31 @@ export async function getEquityCurve(
   const clauses = [...eqFilters.clauses, 'e.ts >= $2', 'e.ts <= $1'];
   const where = `WHERE ${clauses.join(' AND ')}`;
 
+  if (timeRange === 'ALL') {
+    // For ALL range, read complete history and downsample only for chart rendering.
+    const allRows = await query<EquityCurvePoint>(
+      `
+        WITH equity_by_key AS (
+          SELECT
+            e.ts,
+            COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+            COALESCE(e.venue, 'unknown') AS venue,
+            MAX(e.equity) AS equity
+          FROM equity_snapshots e
+          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
+          GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
+        )
+        SELECT ts, SUM(equity) AS equity
+        FROM equity_by_key
+        GROUP BY ts
+        ORDER BY ts ASC
+      `,
+      eqFilters.params
+    );
+    return downsampleEquityCurve(allRows, 2000);
+  }
+
   const rows = await query<EquityCurvePoint>(
     `
       WITH equity_by_key AS (
@@ -561,7 +586,7 @@ export async function getEquityCurve(
     [to_ts, from_ts, ...eqFilters.params]
   );
 
-  if (rows.length > 0 || timeRange === 'ALL') return rows;
+  if (rows.length > 0) return rows;
 
   // Fallback for stale data: show the latest points even if outside requested range.
   return query<EquityCurvePoint>(
@@ -585,6 +610,19 @@ export async function getEquityCurve(
     `,
     eqFilters.params
   ).then((latestRows) => latestRows.reverse());
+}
+
+function downsampleEquityCurve(points: EquityCurvePoint[], maxPoints: number): EquityCurvePoint[] {
+  if (points.length <= maxPoints) return points;
+  if (maxPoints <= 2) return [points[0], points[points.length - 1]];
+
+  const result: EquityCurvePoint[] = [];
+  const step = (points.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i += 1) {
+    const idx = Math.round(i * step);
+    result.push(points[Math.min(idx, points.length - 1)]);
+  }
+  return result;
 }
 
 /**
