@@ -290,6 +290,10 @@ export async function getOverviewStats(
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
   const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
+  const inceptionTs = equityRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
+  const cashFlowSinceInitial = await getCashFlowDelta(inceptionTs, to_ts, venue, strategies);
+  const unrealizedPnlResidual =
+    equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
   const equityPeriodAgo = Number(equityRow?.equity_period_ago ?? equityNow);
   const pnlPeriod = equityNow - equityPeriodAgo - cashFlowPeriod;
   const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
@@ -298,7 +302,7 @@ export async function getOverviewStats(
     total_equity: equityNow,
     pnl_24h: pnlPeriod,
     pnl_24h_pct: pnlPeriodPct,
-    total_unrealized_pnl: adjustedPnl.unrealized_pnl,
+    total_unrealized_pnl: unrealizedPnlResidual,
     total_realized_pnl: adjustedPnl.realized_pnl,
     total_funding: fundingDelta,
     total_margin: Number(stateRow?.total_margin ?? 0),
