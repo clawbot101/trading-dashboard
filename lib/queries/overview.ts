@@ -828,6 +828,13 @@ export async function getRecentActivityPage(
       OR ($3::text = 'rebalance' AND kind = 'rebalance')
     )
   `;
+  const filterSqlCount = `
+    (
+      $2::text = 'all'
+      OR ($2::text = 'fills' AND kind = 'fill')
+      OR ($2::text = 'rebalance' AND kind = 'rebalance')
+    )
+  `;
 
   const items = await query<RecentActivityItem>(
     `
@@ -909,9 +916,9 @@ export async function getRecentActivityPage(
       )
       SELECT COUNT(*)::int AS total
       FROM combined
-      WHERE ${filterSql}
+      WHERE ${filterSqlCount}
     `,
-    [lookbackDays, rebalanceWindowMinutes, tab]
+    [lookbackDays, tab]
   );
 
   const total = Number(countRow?.total ?? 0);
