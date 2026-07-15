@@ -592,21 +592,26 @@ export async function getEquityCurve(
         SELECT ts, SUM(equity) AS equity
         FROM equity_by_key
         GROUP BY ts
-      ),
-      latest_window AS (
-        SELECT ts, equity
-        FROM equity_by_ts
-        ORDER BY ts DESC
-        LIMIT 500
       )
       SELECT ts, equity
-      FROM latest_window
+      FROM equity_by_ts
       ORDER BY ts ASC
     `,
     [to_ts, from_ts, ...eqFilters.params]
   );
 
-  if (rows.length > 0) return rows;
+  if (rows.length > 0) {
+    // Keep full requested period semantics while bounding frontend render cost.
+    const maxPointsByRange: Record<string, number> = {
+      '24H': 1500,
+      '7D': 2000,
+      '30D': 2500,
+      '90D': 3000,
+      'ALL': 2000,
+    };
+    const maxPoints = maxPointsByRange[timeRange] ?? 2000;
+    return downsampleEquityCurve(rows, maxPoints);
+  }
 
   // Fallback for stale data: show the latest points even if outside requested range.
   return query<EquityCurvePoint>(
@@ -626,7 +631,7 @@ export async function getEquityCurve(
       FROM equity_by_key
       GROUP BY ts
       ORDER BY ts DESC
-      LIMIT 500
+      LIMIT 3000
     `,
     eqFilters.params
   ).then((latestRows) => latestRows.reverse());
