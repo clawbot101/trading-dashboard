@@ -22,7 +22,6 @@ export default function OverviewPage() {
   const [timeRange, setTimeRange] = useState('24H');
   const [paused, setPaused] = useState(false);
   const [chartView, setChartView] = useState<'equity' | 'pnl'>('pnl');
-  const [activityTab, setActivityTab] = useState<'all' | 'fills' | 'rebalance'>('all');
   const [activityPage, setActivityPage] = useState(1);
 
   const { data, error, isLoading } = useSWR(
@@ -42,7 +41,7 @@ export default function OverviewPage() {
   const asOf = data?.as_of_ts;
 
   const { data: activityData, isLoading: isActivityLoading } = useSWR(
-    `/api/recent-activity?tab=${activityTab}&page=${activityPage}&pageSize=20`,
+    `/api/recent-activity?tab=all&page=${activityPage}&pageSize=10`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 60000,
@@ -264,61 +263,7 @@ export default function OverviewPage() {
 
       {/* Bottom row: recent fills */}
       <div className="panel p-4">
-        <div className="flex items-center justify-between mb-3">
-          <div className="text-xs text-hl-secondary">Recent Activity</div>
-          <div className="flex items-center gap-2">
-            {[
-              { key: 'all', label: 'All' },
-              { key: 'fills', label: 'Fills' },
-              { key: 'rebalance', label: 'Rebalance' },
-            ].map((tab) => (
-              <button
-                key={tab.key}
-                onClick={() => {
-                  setActivityTab(tab.key as 'all' | 'fills' | 'rebalance');
-                  setActivityPage(1);
-                }}
-                className={`px-2 py-0.5 text-xs rounded ${
-                  activityTab === tab.key
-                    ? 'bg-hl-accent text-hl-bg'
-                    : 'bg-hl-hover text-hl-secondary'
-                }`}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="mb-3 flex items-center justify-between rounded border border-hl-border bg-hl-hover px-3 py-2 text-sm">
-          <div className="font-medium text-hl-text">Pagination</div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
-              disabled={activityPage <= 1}
-              className="px-3 py-1 rounded bg-hl-panel border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Previous
-            </button>
-            <select
-              value={activityPage}
-              onChange={(e) => setActivityPage(Number(e.target.value))}
-              className="bg-hl-panel border border-hl-border rounded px-2 py-1 text-hl-text"
-            >
-              {Array.from({ length: activityTotalPages }, (_, i) => i + 1).map((p) => (
-                <option key={p} value={p}>
-                  Page {p}
-                </option>
-              ))}
-            </select>
-            <button
-              onClick={() => setActivityPage((p) => Math.min(activityTotalPages, p + 1))}
-              disabled={activityPage >= activityTotalPages}
-              className="px-3 py-1 rounded bg-hl-panel border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              Next
-            </button>
-          </div>
-        </div>
+        <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
         <div className="space-y-1">
           {!isActivityLoading && recentActivities.length > 0 ? (
             recentActivities.map((a: any) =>
@@ -381,17 +326,17 @@ export default function OverviewPage() {
           <button
             onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
             disabled={activityPage <= 1}
-            className="px-3 py-1 rounded bg-hl-hover border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-3 py-1 rounded bg-hl-hover disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Previous
           </button>
-          <div className="text-hl-text font-medium">
+          <div className="text-hl-secondary">
             Page {activityPage} of {activityTotalPages} ({activityTotalRows} activities)
           </div>
           <button
             onClick={() => setActivityPage((p) => Math.min(activityTotalPages, p + 1))}
             disabled={activityPage >= activityTotalPages}
-            className="px-3 py-1 rounded bg-hl-hover border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
+            className="px-3 py-1 rounded bg-hl-hover disabled:opacity-40 disabled:cursor-not-allowed"
           >
             Next
           </button>
