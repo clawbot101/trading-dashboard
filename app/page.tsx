@@ -22,6 +22,8 @@ export default function OverviewPage() {
   const [timeRange, setTimeRange] = useState('24H');
   const [paused, setPaused] = useState(false);
   const [chartView, setChartView] = useState<'equity' | 'pnl'>('pnl');
+  const [activityTab, setActivityTab] = useState<'all' | 'fills' | 'rebalance'>('all');
+  const [activityPage, setActivityPage] = useState(1);
 
   const { data, error, isLoading } = useSWR(
     `/api/overview?range=${timeRange.toLowerCase()}`,
@@ -37,9 +39,20 @@ export default function OverviewPage() {
   const cashFlowEvents = data?.data?.cashFlowEvents ?? EMPTY_LIST;
   const strategies = data?.data?.strategyLeaderboard ?? EMPTY_LIST;
   const venueSplit = data?.data?.venueSplit ?? EMPTY_LIST;
-  const recentFills = data?.data?.recentFills ?? EMPTY_LIST;
-  const rebalanceStatus = data?.data?.rebalanceStatus;
   const asOf = data?.as_of_ts;
+
+  const { data: activityData, isLoading: isActivityLoading } = useSWR(
+    `/api/recent-activity?tab=${activityTab}&page=${activityPage}&pageSize=20`,
+    fetcher,
+    {
+      refreshInterval: paused ? 0 : 60000,
+      dedupingInterval: 10000,
+    }
+  );
+
+  const recentActivities = activityData?.data?.items ?? EMPTY_LIST;
+  const activityTotalPages = activityData?.data?.totalPages ?? 1;
+  const activityTotalRows = activityData?.data?.total ?? 0;
 
   const displayEquityCurve = useMemo(() => normalizeEquityCurve(equityCurve), [equityCurve]);
 
@@ -85,39 +98,6 @@ export default function OverviewPage() {
     if (mins > 0) return { text: `${mins}m ago`, seconds };
     return { text: 'Just now', seconds };
   }, [asOf]);
-
-  const recentActivities = useMemo(() => {
-    const activities: Array<
-      | {
-          kind: 'rebalance_same_position';
-          ts: string;
-        }
-      | {
-          kind: 'fill';
-          ts: string;
-          fill: any;
-        }
-    > = [];
-
-    if (rebalanceStatus?.same_position && rebalanceStatus?.rebalance_ts) {
-      activities.push({
-        kind: 'rebalance_same_position',
-        ts: rebalanceStatus.rebalance_ts,
-      });
-    }
-
-    for (const f of recentFills) {
-      if (!f?.ts) continue;
-      activities.push({
-        kind: 'fill',
-        ts: f.ts,
-        fill: f,
-      });
-    }
-
-    activities.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
-    return activities.slice(0, 10);
-  }, [recentFills, rebalanceStatus]);
 
   return (
     <div className="px-4 py-6 max-w-7xl mx-auto">
@@ -284,44 +264,137 @@ export default function OverviewPage() {
 
       {/* Bottom row: recent fills */}
       <div className="panel p-4">
-        <div className="text-xs text-hl-secondary mb-2">Recent Activity</div>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-xs text-hl-secondary">Recent Activity</div>
+          <div className="flex items-center gap-2">
+            {[
+              { key: 'all', label: 'All' },
+              { key: 'fills', label: 'Fills' },
+              { key: 'rebalance', label: 'Rebalance' },
+            ].map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  setActivityTab(tab.key as 'all' | 'fills' | 'rebalance');
+                  setActivityPage(1);
+                }}
+                className={`px-2 py-0.5 text-xs rounded ${
+                  activityTab === tab.key
+                    ? 'bg-hl-accent text-hl-bg'
+                    : 'bg-hl-hover text-hl-secondary'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mb-3 flex items-center justify-between rounded border border-hl-border bg-hl-hover px-3 py-2 text-sm">
+          <div className="font-medium text-hl-text">Pagination</div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
+              disabled={activityPage <= 1}
+              className="px-3 py-1 rounded bg-hl-panel border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Previous
+            </button>
+            <select
+              value={activityPage}
+              onChange={(e) => setActivityPage(Number(e.target.value))}
+              className="bg-hl-panel border border-hl-border rounded px-2 py-1 text-hl-text"
+            >
+              {Array.from({ length: activityTotalPages }, (_, i) => i + 1).map((p) => (
+                <option key={p} value={p}>
+                  Page {p}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setActivityPage((p) => Math.min(activityTotalPages, p + 1))}
+              disabled={activityPage >= activityTotalPages}
+              className="px-3 py-1 rounded bg-hl-panel border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Next
+            </button>
+          </div>
+        </div>
         <div className="space-y-1">
-          {recentActivities.length > 0 ? (
+          {!isActivityLoading && recentActivities.length > 0 ? (
             recentActivities.map((a: any) =>
-              a.kind === 'rebalance_same_position' ? (
+              a.kind === 'rebalance' ? (
                 <div
-                  key={`rebalance-${a.ts}`}
+                  key={`rebalance-${a.ts}-${a?.payload?.fill_count ?? 0}`}
                   className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm border border-hl-border"
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-hl-muted">{formatTimeAgo(a.ts)}</span>
                     <span className="badge-live">Rebalance</span>
                     <span className="font-medium text-hl-secondary">
-                      Same position (no open/close at UTC 00:00 window)
+                      {a?.payload?.same_position
+                        ? 'Same position (no open/close at UTC 00:00 window)'
+                        : `Rebalanced (${a?.payload?.fill_count ?? 0} fills in UTC 00:00 window)`}
                     </span>
                   </div>
                   <div className="font-num text-hl-muted">UTC {formatUtcHm(a.ts)}</div>
                 </div>
               ) : (
                 <div
-                  key={`${a.fill.ts}-${a.fill.symbol}-${a.fill.side}-${a.fill.fill_qty}`}
+                  key={`${a.payload?.ts}-${a.payload?.symbol}-${a.payload?.side}-${a.payload?.fill_qty}`}
                   className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm"
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-hl-muted">{formatTimeAgo(a.fill.ts)}</span>
-                    <span className="font-medium">{a.fill.strategy_name}</span>
-                    <span className={`badge-${a.fill.side.toLowerCase()}`}>{a.fill.side}</span>
-                    <span>{a.fill.symbol}</span>
+                    <span className="text-hl-muted">{formatTimeAgo(a.payload.ts)}</span>
+                    <span className="font-medium">{a.payload.strategy_name}</span>
+                    <span
+                      className={
+                        String(a.payload.side || '').toLowerCase() === 'buy'
+                          ? 'badge-long'
+                          : 'badge-short'
+                      }
+                    >
+                      {String(a.payload.side || '').toLowerCase() === 'buy' ? 'LONG' : 'SHORT'}
+                    </span>
+                    <span className="text-hl-muted">{String(a.payload.side || '').toUpperCase()}</span>
+                    <span>{a.payload.symbol}</span>
+                    <span className="text-hl-muted">{a.payload.venue}</span>
                   </div>
                   <div className="font-num">
-                    {a.fill.fill_qty}@{formatPrice(a.fill.fill_price, 2)}
+                    {a.payload.fill_qty}@{formatPrice(a.payload.fill_price, 2)}{' '}
+                    <span className="text-hl-muted">
+                      fee:{' '}
+                      {a.payload?.fee != null && Number.isFinite(Number(a.payload.fee))
+                        ? formatPrice(Number(a.payload.fee), 4)
+                        : '--'}
+                    </span>
                   </div>
                 </div>
               )
             )
+          ) : isActivityLoading ? (
+            <div className="text-hl-muted text-sm py-4">Loading recent activity...</div>
           ) : (
             <div className="text-hl-muted text-sm py-4">No recent activity</div>
           )}
+        </div>
+        <div className="flex items-center justify-between mt-3 text-sm">
+          <button
+            onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
+            disabled={activityPage <= 1}
+            className="px-3 py-1 rounded bg-hl-hover border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Previous
+          </button>
+          <div className="text-hl-text font-medium">
+            Page {activityPage} of {activityTotalPages} ({activityTotalRows} activities)
+          </div>
+          <button
+            onClick={() => setActivityPage((p) => Math.min(activityTotalPages, p + 1))}
+            disabled={activityPage >= activityTotalPages}
+            className="px-3 py-1 rounded bg-hl-hover border border-hl-border disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            Next
+          </button>
         </div>
       </div>
 

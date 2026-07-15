@@ -34,6 +34,22 @@ function formatUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function extractHoverValue(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (!raw || typeof raw !== 'object') return null;
+
+  const candidate = raw as Record<string, unknown>;
+  const val =
+    candidate.value ??
+    candidate.close ??
+    candidate.price ??
+    candidate.open ??
+    candidate.high ??
+    candidate.low;
+  const num = Number(val);
+  return Number.isFinite(num) ? num : null;
+}
+
 // Chart component that uses lightweight-charts
 function ChartInner({ data, height = 260 }: EquityChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null);
@@ -110,21 +126,24 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
       hasFittedRef.current = true;
 
       const handleCrosshairMove = (param: any) => {
-        const prices = param?.seriesPrices;
-        if (!prices || !seriesRef.current || !param?.point || !param?.time) {
+        if (!seriesRef.current || !param?.point) {
           setHoverValue(null);
           return;
         }
-        const raw = typeof prices.get === 'function' ? prices.get(seriesRef.current) : undefined;
-        if (typeof raw === 'number' && Number.isFinite(raw)) {
-          setHoverValue(raw);
-          return;
-        }
-        if (raw && typeof raw === 'object' && Number.isFinite(Number((raw as any).close))) {
-          setHoverValue(Number((raw as any).close));
-          return;
-        }
-        setHoverValue(null);
+
+        // lightweight-charts versions differ: some provide `seriesPrices`,
+        // newer versions provide `seriesData`.
+        const rawFromPrices =
+          typeof param?.seriesPrices?.get === 'function'
+            ? param.seriesPrices.get(seriesRef.current)
+            : undefined;
+        const rawFromData =
+          typeof param?.seriesData?.get === 'function'
+            ? param.seriesData.get(seriesRef.current)
+            : undefined;
+
+        const value = extractHoverValue(rawFromData ?? rawFromPrices);
+        setHoverValue(value);
       };
       chart.subscribeCrosshairMove(handleCrosshairMove);
     });

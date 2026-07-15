@@ -75,6 +75,22 @@ export interface CashFlowEvent {
   amount: number;
 }
 
+export type RecentActivityTab = 'all' | 'fills' | 'rebalance';
+
+export interface RecentActivityItem {
+  ts: string;
+  kind: 'fill' | 'rebalance';
+  payload: any;
+}
+
+export interface RecentActivityPage {
+  items: RecentActivityItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}
+
 interface QueryFilters {
   venue?: string;
   strategies?: string[];
@@ -786,6 +802,128 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
   `;
 
   return query<RecentFill>(sql, [limit]);
+}
+
+/**
+ * Unified recent activity feed with pagination and tab filtering.
+ * Includes:
+ * - fill events from `fills`
+ * - daily rebalance window events at UTC 00:00
+ */
+export async function getRecentActivityPage(
+  tab: RecentActivityTab,
+  page = 1,
+  pageSize = 20,
+  lookbackDays = 365,
+  rebalanceWindowMinutes = 90
+): Promise<RecentActivityPage> {
+  const safePage = Math.max(1, page);
+  const safePageSize = Math.max(1, Math.min(pageSize, 200));
+  const offset = (safePage - 1) * safePageSize;
+
+  const filterSql = `
+    (
+      $3::text = 'all'
+      OR ($3::text = 'fills' AND kind = 'fill')
+      OR ($3::text = 'rebalance' AND kind = 'rebalance')
+    )
+  `;
+
+  const items = await query<RecentActivityItem>(
+    `
+      WITH fill_events AS (
+        SELECT
+          f.ts AS ts,
+          'fill'::text AS kind,
+          jsonb_build_object(
+            'ts', f.ts,
+            'strategy_name', COALESCE(sess.strategy_name, 'unknown'),
+            'venue', f.venue,
+            'symbol', f.symbol,
+            'side', f.side,
+            'fill_qty', f.fill_qty,
+            'fill_price', f.fill_price,
+            'fee', f.fee
+          ) AS payload
+        FROM fills f
+        LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      ),
+      rebalance_days AS (
+        SELECT generate_series(
+          date_trunc('day', NOW() - make_interval(days => $1::int)),
+          date_trunc('day', NOW()),
+          interval '1 day'
+        ) AS rebalance_ts
+      ),
+      rebalance_events AS (
+        SELECT
+          d.rebalance_ts AS ts,
+          'rebalance'::text AS kind,
+          jsonb_build_object(
+            'rebalance_ts', d.rebalance_ts,
+            'window_end_ts', d.rebalance_ts + make_interval(mins => $2::int),
+            'fill_count', COUNT(f.*)::int,
+            'same_position', (COUNT(f.*) = 0)
+          ) AS payload
+        FROM rebalance_days d
+        LEFT JOIN fills f
+          ON f.ts >= d.rebalance_ts
+         AND f.ts < d.rebalance_ts + make_interval(mins => $2::int)
+        GROUP BY d.rebalance_ts
+      ),
+      combined AS (
+        SELECT ts, kind, payload FROM fill_events
+        UNION ALL
+        SELECT ts, kind, payload FROM rebalance_events
+      )
+      SELECT ts, kind, payload
+      FROM combined
+      WHERE ${filterSql}
+      ORDER BY ts DESC
+      LIMIT $4 OFFSET $5
+    `,
+    [lookbackDays, rebalanceWindowMinutes, tab, safePageSize, offset]
+  );
+
+  const countRow = await queryOne<{ total: number }>(
+    `
+      WITH fill_events AS (
+        SELECT f.ts AS ts, 'fill'::text AS kind
+        FROM fills f
+      ),
+      rebalance_days AS (
+        SELECT generate_series(
+          date_trunc('day', NOW() - make_interval(days => $1::int)),
+          date_trunc('day', NOW()),
+          interval '1 day'
+        ) AS rebalance_ts
+      ),
+      rebalance_events AS (
+        SELECT d.rebalance_ts AS ts, 'rebalance'::text AS kind
+        FROM rebalance_days d
+      ),
+      combined AS (
+        SELECT ts, kind FROM fill_events
+        UNION ALL
+        SELECT ts, kind FROM rebalance_events
+      )
+      SELECT COUNT(*)::int AS total
+      FROM combined
+      WHERE ${filterSql}
+    `,
+    [lookbackDays, rebalanceWindowMinutes, tab]
+  );
+
+  const total = Number(countRow?.total ?? 0);
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+
+  return {
+    items,
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages,
+  };
 }
 
 /**
