@@ -57,7 +57,7 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<EquityCurvePoint[]>(data);
   const hasFittedRef = useRef(false);
-  const [hoverValue, setHoverValue] = useState<number | null>(null);
+  const [hoverInfo, setHoverInfo] = useState<{ value: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
     dataRef.current = data;
@@ -127,7 +127,7 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
 
       const handleCrosshairMove = (param: any) => {
         if (!seriesRef.current || !param?.point) {
-          setHoverValue(null);
+          setHoverInfo(null);
           return;
         }
 
@@ -143,7 +143,16 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
             : undefined;
 
         const value = extractHoverValue(rawFromData ?? rawFromPrices);
-        setHoverValue(value);
+        if (value == null) {
+          setHoverInfo(null);
+          return;
+        }
+
+        setHoverInfo({
+          value,
+          x: Number(param.point.x ?? 0),
+          y: Number(param.point.y ?? 0),
+        });
       };
       chart.subscribeCrosshairMove(handleCrosshairMove);
     });
@@ -163,7 +172,7 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
       window.removeEventListener('resize', handleResize);
       const chartToRemove = localChart || chartRef.current;
       if (chartToRemove) chartToRemove.remove();
-      setHoverValue(null);
+      setHoverInfo(null);
       localChart = null;
       chartRef.current = null;
       seriesRef.current = null;
@@ -186,9 +195,15 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
 
   return (
     <div className="relative">
-      {hoverValue != null && (
-        <div className="absolute left-2 top-2 z-10 rounded bg-hl-bg/80 px-2 py-1 text-xs font-num text-hl-text pointer-events-none">
-          {formatUsd(hoverValue)}
+      {hoverInfo != null && (
+        <div
+          className="absolute z-10 rounded bg-hl-bg/90 px-2 py-1 text-xs font-num text-hl-text pointer-events-none whitespace-nowrap border border-hl-border"
+          style={{
+            left: hoverInfo.x + 12,
+            top: hoverInfo.y + 12,
+          }}
+        >
+          {formatUsd(hoverInfo.value)}
         </div>
       )}
       <div ref={chartContainerRef} className="rounded" />
