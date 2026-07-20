@@ -233,73 +233,59 @@ export async function getOverviewStats(
         SELECT DISTINCT strategy_name, venue
         FROM equity_by_key
       ),
-      latest_per_key AS (
+      first_ts AS (
+        SELECT MIN(ts) AS ts
+        FROM equity_by_key
+      ),
+      eval_points AS (
+        SELECT 'latest'::text AS point, $1::timestamptz AS ref_ts
+        UNION ALL
+        SELECT 'baseline'::text AS point, $2::timestamptz AS ref_ts
+        UNION ALL
+        SELECT 'first'::text AS point, (SELECT ts FROM first_ts)
+      ),
+      point_values AS (
         SELECT
+          ep.point,
+          ep.ref_ts,
           k.strategy_name,
           k.venue,
-          p.ts,
+          p.ts AS asof_ts,
           p.equity
-        FROM keys k
+        FROM eval_points ep
+        CROSS JOIN keys k
         LEFT JOIN LATERAL (
           SELECT ebk.ts, ebk.equity
           FROM equity_by_key ebk
           WHERE ebk.strategy_name = k.strategy_name
             AND ebk.venue = k.venue
-            AND ebk.ts <= $1
+            AND ebk.ts <= ep.ref_ts
           ORDER BY ebk.ts DESC
           LIMIT 1
         ) p ON TRUE
       ),
-      baseline_per_key AS (
+      point_totals AS (
         SELECT
-          k.strategy_name,
-          k.venue,
-          p.ts,
-          p.equity
-        FROM keys k
-        LEFT JOIN LATERAL (
-          SELECT ebk.ts, ebk.equity
-          FROM equity_by_key ebk
-          WHERE ebk.strategy_name = k.strategy_name
-            AND ebk.venue = k.venue
-            AND ebk.ts <= $2
-          ORDER BY ebk.ts DESC
-          LIMIT 1
-        ) p ON TRUE
-      ),
-      first_per_key AS (
-        SELECT
-          k.strategy_name,
-          k.venue,
-          p.ts,
-          p.equity
-        FROM keys k
-        LEFT JOIN LATERAL (
-          SELECT ebk.ts, ebk.equity
-          FROM equity_by_key ebk
-          WHERE ebk.strategy_name = k.strategy_name
-            AND ebk.venue = k.venue
-          ORDER BY ebk.ts ASC
-          LIMIT 1
-        ) p ON TRUE
+          point,
+          MAX(asof_ts) AS ts,
+          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
+        FROM point_values
+        GROUP BY point
       ),
       latest_point AS (
-        SELECT
-          MAX(ts) AS ts,
-          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
-        FROM latest_per_key
+        SELECT ts, total_equity
+        FROM point_totals
+        WHERE point = 'latest'
       ),
       baseline_point AS (
-        SELECT
-          MAX(ts) AS ts,
-          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
-        FROM baseline_per_key
+        SELECT ts, total_equity
+        FROM point_totals
+        WHERE point = 'baseline'
       ),
       first_point AS (
-        SELECT
-          MIN(ts) AS ts,
-          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
-        FROM first_per_key
+        SELECT ts, total_equity
+        FROM point_totals
+        WHERE point = 'first'
       )
       SELECT
         COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
@@ -1191,30 +1177,11 @@ export async function getCashFlowEvents(
   venue?: string,
   strategies?: string[]
 ): Promise<CashFlowEvent[]> {
-  if (!(await hasCashFlowsTable())) return [];
-
   const options: QueryFilters = { venue, strategies };
-  const filters = buildFilters(3, options, true, 'cf');
-  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
-
-  return query<CashFlowEvent>(
-    `
-      SELECT
-        cf.ts,
-        CASE
-          WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
-          WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in') THEN ABS(COALESCE(cf.amount, 0))
-          WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out') THEN -ABS(COALESCE(cf.amount, 0))
-          ELSE COALESCE(cf.amount, 0)
-        END AS amount
-      FROM cash_flows cf
-      LEFT JOIN trading_sessions sess ON cf.session_id = sess.session_id
-      WHERE cf.ts > $1
-        AND cf.ts <= $2
-        ${whereSql}
-      ORDER BY cf.ts ASC
-    `,
-    [fromTs, toTs, ...filters.params]
+  const realFlows = await getRealCashFlowEvents(fromTs, toTs, options);
+  const inceptionFlows = await getStrategyInceptionFlowEvents(fromTs, toTs, options);
+  return [...realFlows, ...inceptionFlows].sort(
+    (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
   );
 }
 
@@ -1374,9 +1341,49 @@ async function getCashFlowDelta(
   venue?: string,
   strategies?: string[]
 ): Promise<number> {
-  if (!(await hasCashFlowsTable())) return 0;
-
   const options: QueryFilters = { venue, strategies };
+  const realDelta = await getRealCashFlowDelta(fromTs, toTs, options);
+  const inceptionFlows = await getStrategyInceptionFlowEvents(fromTs, toTs, options);
+  const inceptionDelta = inceptionFlows.reduce((acc, f) => acc + Number(f.amount || 0), 0);
+  return realDelta + inceptionDelta;
+}
+
+async function getRealCashFlowEvents(
+  fromTs: string,
+  toTs: string,
+  options: QueryFilters
+): Promise<CashFlowEvent[]> {
+  if (!(await hasCashFlowsTable())) return [];
+  const filters = buildFilters(3, options, true, 'cf');
+  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+
+  return query<CashFlowEvent>(
+    `
+      SELECT
+        cf.ts,
+        CASE
+          WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
+          WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in') THEN ABS(COALESCE(cf.amount, 0))
+          WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out') THEN -ABS(COALESCE(cf.amount, 0))
+          ELSE COALESCE(cf.amount, 0)
+        END AS amount
+      FROM cash_flows cf
+      LEFT JOIN trading_sessions sess ON cf.session_id = sess.session_id
+      WHERE cf.ts > $1
+        AND cf.ts <= $2
+        ${whereSql}
+      ORDER BY cf.ts ASC
+    `,
+    [fromTs, toTs, ...filters.params]
+  );
+}
+
+async function getRealCashFlowDelta(
+  fromTs: string,
+  toTs: string,
+  options: QueryFilters
+): Promise<number> {
+  if (!(await hasCashFlowsTable())) return 0;
   const filters = buildFilters(3, options, true, 'cf');
   const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
@@ -1402,8 +1409,54 @@ async function getCashFlowDelta(
     `,
     [fromTs, toTs, ...filters.params]
   );
-
   return Number(row?.net_cash_flow ?? 0);
+}
+
+async function getStrategyInceptionFlowEvents(
+  fromTs: string,
+  toTs: string,
+  options: QueryFilters
+): Promise<CashFlowEvent[]> {
+  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
+
+  return query<CashFlowEvent>(
+    `
+      WITH equity_by_key AS (
+        SELECT
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          e.ts,
+          MAX(e.equity) AS equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqWhere}
+        GROUP BY COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown'), e.ts
+      ),
+      first_per_key AS (
+        SELECT DISTINCT ON (strategy_name, venue)
+          strategy_name,
+          venue,
+          ts AS first_ts,
+          equity AS first_equity
+        FROM equity_by_key
+        ORDER BY strategy_name, venue, ts ASC
+      ),
+      global_start AS (
+        SELECT MIN(first_ts) AS start_ts FROM first_per_key
+      )
+      SELECT
+        f.first_ts AS ts,
+        f.first_equity AS amount
+      FROM first_per_key f
+      CROSS JOIN global_start g
+      WHERE f.first_ts > g.start_ts
+        AND f.first_ts > $1
+        AND f.first_ts <= $2
+      ORDER BY f.first_ts ASC
+    `,
+    [fromTs, toTs, ...eqFilters.params]
+  );
 }
 
 async function getFundingDeltasByDay(
