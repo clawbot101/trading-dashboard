@@ -233,57 +233,73 @@ export async function getOverviewStats(
         SELECT DISTINCT strategy_name, venue
         FROM equity_by_key
       ),
-      timeline AS (
-        SELECT DISTINCT ts
-        FROM equity_by_key
-        WHERE ts <= $1
+      latest_per_key AS (
+        SELECT
+          k.strategy_name,
+          k.venue,
+          p.ts,
+          p.equity
+        FROM keys k
+        LEFT JOIN LATERAL (
+          SELECT ebk.ts, ebk.equity
+          FROM equity_by_key ebk
+          WHERE ebk.strategy_name = k.strategy_name
+            AND ebk.venue = k.venue
+            AND ebk.ts <= $1
+          ORDER BY ebk.ts DESC
+          LIMIT 1
+        ) p ON TRUE
       ),
-      portfolio_curve AS (
-        SELECT ts, total_equity
-        FROM (
-          SELECT
-            t.ts,
-            COALESCE(
-              SUM(
-                COALESCE(
-                  (
-                    SELECT ebk2.equity
-                    FROM equity_by_key ebk2
-                    WHERE ebk2.strategy_name = k.strategy_name
-                      AND ebk2.venue = k.venue
-                      AND ebk2.ts <= t.ts
-                    ORDER BY ebk2.ts DESC
-                    LIMIT 1
-                  ),
-                  0
-                )
-              ),
-              0
-            ) AS total_equity
-          FROM timeline t
-          CROSS JOIN keys k
-          GROUP BY t.ts
-        ) x
+      baseline_per_key AS (
+        SELECT
+          k.strategy_name,
+          k.venue,
+          p.ts,
+          p.equity
+        FROM keys k
+        LEFT JOIN LATERAL (
+          SELECT ebk.ts, ebk.equity
+          FROM equity_by_key ebk
+          WHERE ebk.strategy_name = k.strategy_name
+            AND ebk.venue = k.venue
+            AND ebk.ts <= $2
+          ORDER BY ebk.ts DESC
+          LIMIT 1
+        ) p ON TRUE
+      ),
+      first_per_key AS (
+        SELECT
+          k.strategy_name,
+          k.venue,
+          p.ts,
+          p.equity
+        FROM keys k
+        LEFT JOIN LATERAL (
+          SELECT ebk.ts, ebk.equity
+          FROM equity_by_key ebk
+          WHERE ebk.strategy_name = k.strategy_name
+            AND ebk.venue = k.venue
+          ORDER BY ebk.ts ASC
+          LIMIT 1
+        ) p ON TRUE
       ),
       latest_point AS (
-        SELECT ts, total_equity
-        FROM portfolio_curve
-        WHERE ts <= $1
-        ORDER BY ts DESC
-        LIMIT 1
+        SELECT
+          MAX(ts) AS ts,
+          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
+        FROM latest_per_key
       ),
       baseline_point AS (
-        SELECT ts, total_equity
-        FROM portfolio_curve
-        WHERE ts <= $2
-        ORDER BY ts DESC
-        LIMIT 1
+        SELECT
+          MAX(ts) AS ts,
+          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
+        FROM baseline_per_key
       ),
       first_point AS (
-        SELECT ts, total_equity
-        FROM portfolio_curve
-        ORDER BY ts ASC
-        LIMIT 1
+        SELECT
+          MIN(ts) AS ts,
+          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
+        FROM first_per_key
       )
       SELECT
         COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
