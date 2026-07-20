@@ -213,7 +213,7 @@ export default function OverviewPage() {
         <div className="space-y-4">
           {/* Strategy leaderboard */}
           <div className="panel p-4">
-            <div className="text-xs text-hl-secondary mb-2">Strategy Leaderboard</div>
+            <div className="text-xs text-hl-secondary mb-2">Strategy Leaderboard (Since Start)</div>
             <div className="space-y-1">
               {strategies.length > 0 ? (
                 strategies.slice(0, 5).map((s: any) => (

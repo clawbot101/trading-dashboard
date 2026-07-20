@@ -229,28 +229,59 @@ export async function getOverviewStats(
         ${eqWhere}
         GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
-      equity_by_ts AS (
-        SELECT ts, SUM(equity) AS total_equity
+      keys AS (
+        SELECT DISTINCT strategy_name, venue
         FROM equity_by_key
-        GROUP BY ts
+      ),
+      timeline AS (
+        SELECT DISTINCT ts
+        FROM equity_by_key
+        WHERE ts <= $1
+      ),
+      portfolio_curve AS (
+        SELECT ts, total_equity
+        FROM (
+          SELECT
+            t.ts,
+            COALESCE(
+              SUM(
+                COALESCE(
+                  (
+                    SELECT ebk2.equity
+                    FROM equity_by_key ebk2
+                    WHERE ebk2.strategy_name = k.strategy_name
+                      AND ebk2.venue = k.venue
+                      AND ebk2.ts <= t.ts
+                    ORDER BY ebk2.ts DESC
+                    LIMIT 1
+                  ),
+                  0
+                )
+              ),
+              0
+            ) AS total_equity
+          FROM timeline t
+          CROSS JOIN keys k
+          GROUP BY t.ts
+        ) x
       ),
       latest_point AS (
         SELECT ts, total_equity
-        FROM equity_by_ts
+        FROM portfolio_curve
         WHERE ts <= $1
         ORDER BY ts DESC
         LIMIT 1
       ),
       baseline_point AS (
         SELECT ts, total_equity
-        FROM equity_by_ts
+        FROM portfolio_curve
         WHERE ts <= $2
         ORDER BY ts DESC
         LIMIT 1
       ),
       first_point AS (
         SELECT ts, total_equity
-        FROM equity_by_ts
+        FROM portfolio_curve
         ORDER BY ts ASC
         LIMIT 1
       )
@@ -564,10 +595,41 @@ export async function getEquityCurve(
           LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
           ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
           GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
+        ),
+        keys AS (
+          SELECT DISTINCT strategy_name, venue
+          FROM equity_by_key
+        ),
+        timeline AS (
+          SELECT DISTINCT ts
+          FROM equity_by_key
+        ),
+        portfolio_curve AS (
+          SELECT
+            t.ts,
+            COALESCE(
+              SUM(
+                COALESCE(
+                  (
+                    SELECT ebk2.equity
+                    FROM equity_by_key ebk2
+                    WHERE ebk2.strategy_name = k.strategy_name
+                      AND ebk2.venue = k.venue
+                      AND ebk2.ts <= t.ts
+                    ORDER BY ebk2.ts DESC
+                    LIMIT 1
+                  ),
+                  0
+                )
+              ),
+              0
+            ) AS equity
+          FROM timeline t
+          CROSS JOIN keys k
+          GROUP BY t.ts
         )
-        SELECT ts, SUM(equity) AS equity
-        FROM equity_by_key
-        GROUP BY ts
+        SELECT ts, equity
+        FROM portfolio_curve
         ORDER BY ts ASC
       `,
       eqFilters.params
@@ -588,13 +650,43 @@ export async function getEquityCurve(
         ${where}
         GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
-      equity_by_ts AS (
-        SELECT ts, SUM(equity) AS equity
+      keys AS (
+        SELECT DISTINCT strategy_name, venue
         FROM equity_by_key
-        GROUP BY ts
+      ),
+      timeline AS (
+        SELECT DISTINCT ts FROM equity_by_key
+        UNION
+        SELECT $2::timestamptz
+        UNION
+        SELECT $1::timestamptz
+      ),
+      portfolio_curve AS (
+        SELECT
+          t.ts,
+          COALESCE(
+            SUM(
+              COALESCE(
+                (
+                  SELECT ebk2.equity
+                  FROM equity_by_key ebk2
+                  WHERE ebk2.strategy_name = k.strategy_name
+                    AND ebk2.venue = k.venue
+                    AND ebk2.ts <= t.ts
+                  ORDER BY ebk2.ts DESC
+                  LIMIT 1
+                ),
+                0
+              )
+            ),
+            0
+          ) AS equity
+        FROM timeline t
+        CROSS JOIN keys k
+        GROUP BY t.ts
       )
       SELECT ts, equity
-      FROM equity_by_ts
+      FROM portfolio_curve
       ORDER BY ts ASC
     `,
     [to_ts, from_ts, ...eqFilters.params]
@@ -626,10 +718,41 @@ export async function getEquityCurve(
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
         GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
+      ),
+      keys AS (
+        SELECT DISTINCT strategy_name, venue
+        FROM equity_by_key
+      ),
+      timeline AS (
+        SELECT DISTINCT ts
+        FROM equity_by_key
+      ),
+      portfolio_curve AS (
+        SELECT
+          t.ts,
+          COALESCE(
+            SUM(
+              COALESCE(
+                (
+                  SELECT ebk2.equity
+                  FROM equity_by_key ebk2
+                  WHERE ebk2.strategy_name = k.strategy_name
+                    AND ebk2.venue = k.venue
+                    AND ebk2.ts <= t.ts
+                  ORDER BY ebk2.ts DESC
+                  LIMIT 1
+                ),
+                0
+              )
+            ),
+            0
+          ) AS equity
+        FROM timeline t
+        CROSS JOIN keys k
+        GROUP BY t.ts
       )
-      SELECT ts, SUM(equity) AS equity
-      FROM equity_by_key
-      GROUP BY ts
+      SELECT ts, equity
+      FROM portfolio_curve
       ORDER BY ts DESC
       LIMIT 3000
     `,
@@ -657,7 +780,7 @@ export async function getStrategyLeaderboard(
   timeRange = '24H',
   venue?: string
 ): Promise<StrategyLeaderboardRow[]> {
-  const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
+  const { to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue };
   const eqFilters = buildFilters(3, options, true, 'e');
   const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
@@ -688,14 +811,6 @@ export async function getStrategyLeaderboard(
         WHERE ts <= $1
         ORDER BY strategy_name, ts DESC
       ),
-      baseline AS (
-        SELECT DISTINCT ON (strategy_name)
-          strategy_name,
-          total_equity AS baseline_equity
-        FROM strategy_equity
-        WHERE ts <= $2
-        ORDER BY strategy_name, ts DESC
-      ),
       first_equity AS (
         SELECT DISTINCT ON (strategy_name)
           strategy_name,
@@ -714,17 +829,16 @@ export async function getStrategyLeaderboard(
       SELECT
         l.strategy_name,
         'running' AS status,
-        (l.latest_equity - COALESCE(b.baseline_equity, f.first_equity, l.latest_equity)) AS pnl,
+        (l.latest_equity - COALESCE(f.first_equity, l.latest_equity)) AS pnl,
         l.latest_equity,
         COALESCE(n.notional, 0) AS notional
       FROM latest l
-      LEFT JOIN baseline b ON b.strategy_name = l.strategy_name
       LEFT JOIN first_equity f ON f.strategy_name = l.strategy_name
       LEFT JOIN state_notional n ON n.strategy_name = l.strategy_name
       ORDER BY pnl DESC
       LIMIT 10
     `,
-    [to_ts, from_ts, ...eqFilters.params]
+    [to_ts, ...eqFilters.params]
   );
 
   return rows.map(r => ({
