@@ -593,12 +593,10 @@ export async function getEquityCurve(
 ): Promise<EquityCurvePoint[]> {
   const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue, strategies };
-  const eqFilters = buildFilters(3, options, true, 'e');
-  const clauses = [...eqFilters.clauses, 'e.ts >= $2', 'e.ts <= $1'];
-  const where = `WHERE ${clauses.join(' AND ')}`;
 
   if (timeRange === 'ALL') {
     // For ALL range, read complete history and downsample only for chart rendering.
+    const eqFiltersAll = buildFilters(1, options, true, 'e');
     const allRows = await query<EquityCurvePoint>(
       `
         WITH equity_by_key AS (
@@ -609,53 +607,53 @@ export async function getEquityCurve(
             MAX(e.equity) AS equity
           FROM equity_snapshots e
           LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-          ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
+          ${eqFiltersAll.clauses.length ? `WHERE ${eqFiltersAll.clauses.join(' AND ')}` : ''}
           GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
         ),
-        keys AS (
-          SELECT DISTINCT strategy_name, venue
+        key_changes AS (
+          SELECT
+            ebk.strategy_name,
+            ebk.venue,
+            ebk.ts,
+            ebk.equity - COALESCE(
+              LAG(ebk.equity) OVER (
+                PARTITION BY ebk.strategy_name, ebk.venue
+                ORDER BY ebk.ts
+              ),
+              0
+            ) AS delta
           FROM equity_by_key
         ),
-        timeline AS (
-          SELECT DISTINCT ts
-          FROM equity_by_key
+        ts_deltas AS (
+          SELECT
+            ts,
+            SUM(delta) AS delta
+          FROM key_changes
+          GROUP BY ts
         ),
         portfolio_curve AS (
           SELECT
-            t.ts,
-            COALESCE(
-              SUM(
-                COALESCE(
-                  (
-                    SELECT ebk2.equity
-                    FROM equity_by_key ebk2
-                    WHERE ebk2.strategy_name = k.strategy_name
-                      AND ebk2.venue = k.venue
-                      AND ebk2.ts <= t.ts
-                    ORDER BY ebk2.ts DESC
-                    LIMIT 1
-                  ),
-                  0
-                )
-              ),
-              0
+            ts,
+            SUM(delta) OVER (
+              ORDER BY ts
+              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
             ) AS equity
-          FROM timeline t
-          CROSS JOIN keys k
-          GROUP BY t.ts
+          FROM ts_deltas
         )
         SELECT ts, equity
         FROM portfolio_curve
         ORDER BY ts ASC
       `,
-      eqFilters.params
+      eqFiltersAll.params
     );
     return downsampleEquityCurve(allRows, 2000);
   }
 
+  const eqFilters = buildFilters(3, options, true, 'e');
+
   const rows = await query<EquityCurvePoint>(
     `
-      WITH equity_by_key AS (
+      WITH equity_by_key_all AS (
         SELECT
           e.ts,
           COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
@@ -663,43 +661,73 @@ export async function getEquityCurve(
           MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-        ${where}
+        ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
         GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
       keys AS (
         SELECT DISTINCT strategy_name, venue
-        FROM equity_by_key
+        FROM equity_by_key_all
       ),
-      timeline AS (
-        SELECT DISTINCT ts FROM equity_by_key
-        UNION
-        SELECT $2::timestamptz
-        UNION
-        SELECT $1::timestamptz
-      ),
-      portfolio_curve AS (
+      seed_per_key AS (
         SELECT
-          t.ts,
+          k.strategy_name,
+          k.venue,
           COALESCE(
-            SUM(
-              COALESCE(
-                (
-                  SELECT ebk2.equity
-                  FROM equity_by_key ebk2
-                  WHERE ebk2.strategy_name = k.strategy_name
-                    AND ebk2.venue = k.venue
-                    AND ebk2.ts <= t.ts
-                  ORDER BY ebk2.ts DESC
-                  LIMIT 1
-                ),
-                0
-              )
+            (
+              SELECT ebk.equity
+              FROM equity_by_key_all ebk
+              WHERE ebk.strategy_name = k.strategy_name
+                AND ebk.venue = k.venue
+                AND ebk.ts <= $2
+              ORDER BY ebk.ts DESC
+              LIMIT 1
             ),
             0
           ) AS equity
-        FROM timeline t
-        CROSS JOIN keys k
-        GROUP BY t.ts
+        FROM keys k
+      ),
+      in_range AS (
+        SELECT strategy_name, venue, ts, equity
+        FROM equity_by_key_all
+        WHERE ts > $2
+          AND ts <= $1
+      ),
+      unioned AS (
+        SELECT strategy_name, venue, $2::timestamptz AS ts, equity
+        FROM seed_per_key
+        UNION
+        SELECT strategy_name, venue, ts, equity
+        FROM in_range
+      ),
+      key_changes AS (
+        SELECT
+          u.strategy_name,
+          u.venue,
+          u.ts,
+          u.equity - COALESCE(
+            LAG(u.equity) OVER (
+              PARTITION BY u.strategy_name, u.venue
+              ORDER BY u.ts
+            ),
+            0
+          ) AS delta
+        FROM unioned u
+      ),
+      ts_deltas AS (
+        SELECT
+          ts,
+          SUM(delta) AS delta
+        FROM key_changes
+        GROUP BY ts
+      ),
+      portfolio_curve AS (
+        SELECT
+          ts,
+          SUM(delta) OVER (
+            ORDER BY ts
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+          ) AS equity
+        FROM ts_deltas
       )
       SELECT ts, equity
       FROM portfolio_curve
@@ -735,37 +763,35 @@ export async function getEquityCurve(
         ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
         GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
       ),
-      keys AS (
-        SELECT DISTINCT strategy_name, venue
-        FROM equity_by_key
+      key_changes AS (
+        SELECT
+          ebk.strategy_name,
+          ebk.venue,
+          ebk.ts,
+          ebk.equity - COALESCE(
+            LAG(ebk.equity) OVER (
+              PARTITION BY ebk.strategy_name, ebk.venue
+              ORDER BY ebk.ts
+            ),
+            0
+          ) AS delta
+        FROM equity_by_key ebk
       ),
-      timeline AS (
-        SELECT DISTINCT ts
-        FROM equity_by_key
+      ts_deltas AS (
+        SELECT
+          ts,
+          SUM(delta) AS delta
+        FROM key_changes
+        GROUP BY ts
       ),
       portfolio_curve AS (
         SELECT
-          t.ts,
-          COALESCE(
-            SUM(
-              COALESCE(
-                (
-                  SELECT ebk2.equity
-                  FROM equity_by_key ebk2
-                  WHERE ebk2.strategy_name = k.strategy_name
-                    AND ebk2.venue = k.venue
-                    AND ebk2.ts <= t.ts
-                  ORDER BY ebk2.ts DESC
-                  LIMIT 1
-                ),
-                0
-              )
-            ),
-            0
+          ts,
+          SUM(delta) OVER (
+            ORDER BY ts
+            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
           ) AS equity
-        FROM timeline t
-        CROSS JOIN keys k
-        GROUP BY t.ts
+        FROM ts_deltas
       )
       SELECT ts, equity
       FROM portfolio_curve
