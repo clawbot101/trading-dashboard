@@ -1,7 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
 
@@ -23,9 +23,10 @@ export default function OverviewPage() {
   const [paused, setPaused] = useState(false);
   const [chartView, setChartView] = useState<'equity' | 'pnl'>('pnl');
   const [activityPage, setActivityPage] = useState(1);
+  const [selectedStrategy, setSelectedStrategy] = useState<string>('all');
 
   const { data, error, isLoading } = useSWR(
-    `/api/overview?range=${timeRange.toLowerCase()}`,
+    `/api/overview?range=${timeRange.toLowerCase()}&strategy=${encodeURIComponent(selectedStrategy)}`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 60000, // 60s for analytics
@@ -33,10 +34,20 @@ export default function OverviewPage() {
     }
   );
 
+  // Keep a full leaderboard dataset so users can always switch strategies.
+  const { data: leaderboardData } = useSWR(
+    `/api/overview?range=${timeRange.toLowerCase()}&strategy=all`,
+    fetcher,
+    {
+      refreshInterval: paused ? 0 : 60000,
+      dedupingInterval: 30000,
+    }
+  );
+
   const stats = data?.data?.stats;
   const equityCurve = data?.data?.equityCurve ?? EMPTY_LIST;
   const cashFlowEvents = data?.data?.cashFlowEvents ?? EMPTY_LIST;
-  const strategies = data?.data?.strategyLeaderboard ?? EMPTY_LIST;
+  const strategies = leaderboardData?.data?.strategyLeaderboard ?? EMPTY_LIST;
   const venueSplit = data?.data?.venueSplit ?? EMPTY_LIST;
   const asOf = data?.as_of_ts;
 
@@ -52,6 +63,10 @@ export default function OverviewPage() {
   const recentActivities = activityData?.data?.items ?? EMPTY_LIST;
   const activityTotalPages = activityData?.data?.totalPages ?? 1;
   const activityTotalRows = activityData?.data?.total ?? 0;
+
+  useEffect(() => {
+    setActivityPage(1);
+  }, [selectedStrategy]);
 
   const displayEquityCurve = useMemo(() => normalizeEquityCurve(equityCurve), [equityCurve]);
 
@@ -215,11 +230,31 @@ export default function OverviewPage() {
           <div className="panel p-4">
             <div className="text-xs text-hl-secondary mb-2">Strategy Leaderboard (Since Start)</div>
             <div className="space-y-1">
+              <button
+                type="button"
+                onClick={() => setSelectedStrategy('all')}
+                className={`w-full flex items-center justify-between p-2 rounded text-left transition ${
+                  selectedStrategy === 'all'
+                    ? 'bg-hl-accent/20 ring-1 ring-hl-accent'
+                    : 'bg-hl-hover hover:bg-hl-panel'
+                }`}
+              >
+                <span className="text-sm font-medium">All Strategies</span>
+                <span className="text-xs text-hl-secondary">Portfolio View</span>
+              </button>
               {strategies.length > 0 ? (
                 strategies.slice(0, 5).map((s: any) => (
-                  <div
+                  <button
+                    type="button"
                     key={s.strategy_name}
-                    className="flex items-center justify-between p-2 bg-hl-hover rounded"
+                    onClick={() =>
+                      setSelectedStrategy((prev) => (prev === s.strategy_name ? 'all' : s.strategy_name))
+                    }
+                    className={`w-full flex items-center justify-between p-2 rounded text-left transition ${
+                      selectedStrategy === s.strategy_name
+                        ? 'bg-hl-accent/20 ring-1 ring-hl-accent'
+                        : 'bg-hl-hover hover:bg-hl-panel'
+                    }`}
                   >
                     <span className="text-sm font-medium">{s.strategy_name}</span>
                     <div className="flex items-center gap-3">
@@ -234,7 +269,7 @@ export default function OverviewPage() {
                         {formatPnl(s.pnl)}
                       </span>
                     </div>
-                  </div>
+                  </button>
                 ))
               ) : (
                 <div className="text-hl-muted text-sm py-4">No strategies</div>
