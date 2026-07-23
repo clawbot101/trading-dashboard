@@ -615,7 +615,7 @@ export async function getEquityCurve(
               ),
               0
             ) AS delta
-          FROM equity_by_key
+          FROM equity_by_key ebk
         ),
         ts_deltas AS (
           SELECT
