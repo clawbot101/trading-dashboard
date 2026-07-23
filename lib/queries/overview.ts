@@ -905,7 +905,7 @@ export async function getStrategyLeaderboard(
         (new Date(latestTs).getTime() - new Date(firstTs).getTime()) / 86400000,
         0
       );
-      const annualizedRate = elapsedDays > 0 ? returnRate * (365.25 / elapsedDays) : returnRate;
+      const annualizedRate = elapsedDays > 0 ? returnRate * (365 / elapsedDays) : returnRate;
       return {
         strategy_name: r.strategy_name,
         status: r.status || 'unknown',
