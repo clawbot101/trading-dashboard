@@ -1432,6 +1432,8 @@ const EQUITY_JUMP_ABS_MIN = 50;
 const EQUITY_JUMP_REL_MIN = 0.02;
 /** Match window when deduping detected jumps against recorded cash_flows. */
 const CASH_FLOW_DEDUPE_MS = 2 * 60 * 1000;
+/** Wider window for matching a jump against a cluster of nearby recorded flows. */
+const CASH_FLOW_CLUSTER_DEDUPE_MS = 48 * 60 * 60 * 1000;
 
 function dedupeCashFlowsAgainstKnown(
   candidates: CashFlowEvent[],
@@ -1445,7 +1447,7 @@ function dedupeCashFlowsAgainstKnown(
     const cAmt = Number(candidate.amount || 0);
     if (!Number.isFinite(cTs) || !Number.isFinite(cAmt)) return false;
 
-    return !known.some((k) => {
+    const exactHit = known.some((k) => {
       const kTs = new Date(k.ts).getTime();
       const kAmt = Number(k.amount || 0);
       if (!Number.isFinite(kTs) || !Number.isFinite(kAmt)) return false;
@@ -1453,6 +1455,18 @@ function dedupeCashFlowsAgainstKnown(
       const scale = Math.max(Math.abs(cAmt), Math.abs(kAmt), 1);
       return Math.abs(kAmt - cAmt) / scale <= 0.05;
     });
+    if (exactHit) return false;
+
+    // A methodology switch / multi-leg transfer can be recorded as several cash
+    // flows (e.g. $10k deposit + prior spot inclusion) while equity moves once.
+    const nearby = known.filter((k) => {
+      const kTs = new Date(k.ts).getTime();
+      return Number.isFinite(kTs) && Math.abs(kTs - cTs) <= CASH_FLOW_CLUSTER_DEDUPE_MS;
+    });
+    if (!nearby.length) return true;
+    const nearbySum = nearby.reduce((acc, k) => acc + Number(k.amount || 0), 0);
+    const scale = Math.max(Math.abs(cAmt), Math.abs(nearbySum), 1);
+    return Math.abs(nearbySum - cAmt) / scale > 0.15;
   });
 }
 
@@ -1521,6 +1535,15 @@ async function getDetectedEquityJumpFlowEvents(
         WHERE f.session_id = j.session_id
           AND f.ts > j.prev_ts
           AND f.ts <= j.ts
+      )
+      -- Prefer explicit cash_flows over synthetic jump detection whenever any
+      -- deposit/transfer was recorded in the same equity gap.
+      AND NOT EXISTS (
+        SELECT 1
+        FROM cash_flows cf
+        WHERE cf.session_id = j.session_id
+          AND cf.ts > j.prev_ts
+          AND cf.ts <= j.ts + INTERVAL '1 minute'
       )
       ORDER BY j.ts ASC
     `,
