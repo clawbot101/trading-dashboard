@@ -3,7 +3,10 @@
  *
  * PnL rules:
  * - Top-level net PnL is always computed from equity snapshots:
- *   net_pnl(t0, t1) = equity(t1) - equity(t0)
+ *   net_pnl(t0, t1) = equity(t1) - equity(t0) - net_cash_flow(t0, t1)
+ * - Deposits / transfers / withdrawals (Hyperliquid or otherwise) are cash flows,
+ *   not trading PnL. Large equity jumps with no fills in-between are treated as
+ *   synthetic cash flows when cash_flows rows are missing.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
  */
 
@@ -834,6 +837,7 @@ export async function getStrategyLeaderboard(
       latest AS (
         SELECT DISTINCT ON (strategy_name)
           strategy_name,
+          ts AS latest_ts,
           total_equity AS latest_equity
         FROM strategy_equity
         WHERE ts <= $1
@@ -842,6 +846,7 @@ export async function getStrategyLeaderboard(
       first_equity AS (
         SELECT DISTINCT ON (strategy_name)
           strategy_name,
+          ts AS first_ts,
           total_equity AS first_equity
         FROM strategy_equity
         ORDER BY strategy_name, ts ASC
@@ -857,33 +862,47 @@ export async function getStrategyLeaderboard(
       SELECT
         l.strategy_name,
         'running' AS status,
-        (l.latest_equity - COALESCE(f.first_equity, l.latest_equity)) AS pnl,
+        f.first_ts,
+        l.latest_ts,
+        COALESCE(f.first_equity, l.latest_equity) AS first_equity,
         l.latest_equity,
         COALESCE(n.notional, 0) AS notional
       FROM latest l
       LEFT JOIN first_equity f ON f.strategy_name = l.strategy_name
       LEFT JOIN state_notional n ON n.strategy_name = l.strategy_name
-      ORDER BY pnl DESC
+      ORDER BY l.latest_equity DESC
       LIMIT 10
     `,
     [to_ts, ...eqFilters.params]
   );
 
-  return rows.map(r => ({
-    strategy_name: r.strategy_name,
-    status: r.status || 'unknown',
-    pnl: Number(r.pnl) || 0,
-    return_pct: Number(r.latest_equity) > 0 ? (Number(r.pnl) / Number(r.latest_equity)) * 100 : 0,
-    latest_equity: Number(r.latest_equity) || 0,
-    notional: Number(r.notional) || 0,
-  }));
+  const withPnl = await Promise.all(
+    rows.map(async (r) => {
+      const firstEquity = Number(r.first_equity) || 0;
+      const latestEquity = Number(r.latest_equity) || 0;
+      const firstTs = r.first_ts ?? '2000-01-01T00:00:00Z';
+      const latestTs = r.latest_ts ?? to_ts;
+      const cashFlow = await getCashFlowDelta(firstTs, latestTs, venue, [r.strategy_name]);
+      const pnl = latestEquity - firstEquity - cashFlow;
+      return {
+        strategy_name: r.strategy_name,
+        status: r.status || 'unknown',
+        pnl,
+        return_pct: latestEquity > 0 ? (pnl / latestEquity) * 100 : 0,
+        latest_equity: latestEquity,
+        notional: Number(r.notional) || 0,
+      };
+    })
+  );
+
+  return withPnl.sort((a, b) => b.pnl - a.pnl);
 }
 
 /**
  * Venue split.
  */
 export async function getVenueSplit(): Promise<VenueSplitRow[]> {
-  const rows = await query<VenueSplitRow>(
+  const rows = await query<any>(
     `
       WITH equity_by_key AS (
         SELECT
@@ -901,12 +920,18 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
         GROUP BY venue, ts
       ),
       latest AS (
-        SELECT DISTINCT ON (venue) venue, total_equity
+        SELECT DISTINCT ON (venue)
+          venue,
+          ts AS latest_ts,
+          total_equity
         FROM venue_equity
         ORDER BY venue, ts DESC
       ),
       prior AS (
-        SELECT DISTINCT ON (venue) venue, total_equity
+        SELECT DISTINCT ON (venue)
+          venue,
+          ts AS prior_ts,
+          total_equity
         FROM venue_equity
         WHERE ts <= NOW() - INTERVAL '24 hours'
         ORDER BY venue, ts DESC
@@ -914,18 +939,33 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
       SELECT
         l.venue,
         l.total_equity AS equity,
-        (l.total_equity - COALESCE(p.total_equity, l.total_equity)) AS pnl
+        l.latest_ts,
+        COALESCE(p.prior_ts, l.latest_ts - INTERVAL '24 hours') AS prior_ts,
+        COALESCE(p.total_equity, l.total_equity) AS prior_equity
       FROM latest l
       LEFT JOIN prior p USING (venue)
       ORDER BY l.venue
     `
   );
 
-  return rows.map((row) => ({
-    venue: row.venue,
-    equity: Number((row as any).equity ?? 0),
-    pnl: Number((row as any).pnl ?? 0),
-  }));
+  const withPnl = await Promise.all(
+    rows.map(async (row) => {
+      const equity = Number(row.equity ?? 0);
+      const priorEquity = Number(row.prior_equity ?? equity);
+      const cashFlow = await getCashFlowDelta(
+        row.prior_ts ?? new Date(Date.now() - 86400000).toISOString(),
+        row.latest_ts ?? new Date().toISOString(),
+        row.venue
+      );
+      return {
+        venue: row.venue,
+        equity,
+        pnl: equity - priorEquity - cashFlow,
+      };
+    })
+  );
+
+  return withPnl;
 }
 
 /**
@@ -1180,7 +1220,9 @@ export async function getCashFlowEvents(
   const options: QueryFilters = { venue, strategies };
   const realFlows = await getRealCashFlowEvents(fromTs, toTs, options);
   const inceptionFlows = await getStrategyInceptionFlowEvents(fromTs, toTs, options);
-  return [...realFlows, ...inceptionFlows].sort(
+  const jumpFlows = await getDetectedEquityJumpFlowEvents(fromTs, toTs, options);
+  const dedupedJumps = dedupeCashFlowsAgainstKnown(jumpFlows, realFlows);
+  return [...realFlows, ...inceptionFlows, ...dedupedJumps].sort(
     (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
   );
 }
@@ -1345,7 +1387,115 @@ async function getCashFlowDelta(
   const realDelta = await getRealCashFlowDelta(fromTs, toTs, options);
   const inceptionFlows = await getStrategyInceptionFlowEvents(fromTs, toTs, options);
   const inceptionDelta = inceptionFlows.reduce((acc, f) => acc + Number(f.amount || 0), 0);
-  return realDelta + inceptionDelta;
+  const jumpFlows = await getDetectedEquityJumpFlowEvents(fromTs, toTs, options);
+  const realFlows = await getRealCashFlowEvents(fromTs, toTs, options);
+  const jumpDelta = dedupeCashFlowsAgainstKnown(jumpFlows, realFlows).reduce(
+    (acc, f) => acc + Number(f.amount || 0),
+    0
+  );
+  return realDelta + inceptionDelta + jumpDelta;
+}
+
+/** Absolute USD threshold for treating an equity jump as a deposit/withdrawal. */
+const EQUITY_JUMP_ABS_MIN = 50;
+/** Relative threshold vs prior equity (also requires abs >= EQUITY_JUMP_ABS_MIN). */
+const EQUITY_JUMP_REL_MIN = 0.02;
+/** Match window when deduping detected jumps against recorded cash_flows. */
+const CASH_FLOW_DEDUPE_MS = 2 * 60 * 1000;
+
+function dedupeCashFlowsAgainstKnown(
+  candidates: CashFlowEvent[],
+  known: CashFlowEvent[]
+): CashFlowEvent[] {
+  if (!candidates.length) return [];
+  if (!known.length) return candidates;
+
+  return candidates.filter((candidate) => {
+    const cTs = new Date(candidate.ts).getTime();
+    const cAmt = Number(candidate.amount || 0);
+    if (!Number.isFinite(cTs) || !Number.isFinite(cAmt)) return false;
+
+    return !known.some((k) => {
+      const kTs = new Date(k.ts).getTime();
+      const kAmt = Number(k.amount || 0);
+      if (!Number.isFinite(kTs) || !Number.isFinite(kAmt)) return false;
+      if (Math.abs(kTs - cTs) > CASH_FLOW_DEDUPE_MS) return false;
+      const scale = Math.max(Math.abs(cAmt), Math.abs(kAmt), 1);
+      return Math.abs(kAmt - cAmt) / scale <= 0.05;
+    });
+  });
+}
+
+/**
+ * Detect deposit/withdrawal-like equity jumps: large Δequity between consecutive
+ * snapshots for a session with no fills in that interval.
+ * Hyperliquid transfers inflate account equity but are not trading PnL.
+ */
+async function getDetectedEquityJumpFlowEvents(
+  fromTs: string,
+  toTs: string,
+  options: QueryFilters
+): Promise<CashFlowEvent[]> {
+  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
+
+  return query<CashFlowEvent>(
+    `
+      WITH equity_raw AS (
+        SELECT
+          e.ts,
+          e.session_id,
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          MAX(e.equity) AS equity
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqWhere}
+        GROUP BY e.ts, e.session_id, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
+      ),
+      with_lag AS (
+        SELECT
+          ts,
+          session_id,
+          strategy_name,
+          venue,
+          equity,
+          LAG(equity) OVER (PARTITION BY session_id ORDER BY ts) AS prev_equity,
+          LAG(ts) OVER (PARTITION BY session_id ORDER BY ts) AS prev_ts
+        FROM equity_raw
+      ),
+      jumps AS (
+        SELECT
+          ts,
+          session_id,
+          prev_ts,
+          (equity - prev_equity) AS amount,
+          prev_equity
+        FROM with_lag
+        WHERE prev_equity IS NOT NULL
+          AND ts > $1
+          AND ts <= $2
+          AND ABS(equity - prev_equity) >= ${EQUITY_JUMP_ABS_MIN}
+          AND (
+            ABS(equity - prev_equity) >= 200
+            OR ABS(equity - prev_equity) / NULLIF(ABS(prev_equity), 0) >= ${EQUITY_JUMP_REL_MIN}
+          )
+      )
+      SELECT
+        j.ts,
+        j.amount
+      FROM jumps j
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM fills f
+        WHERE f.session_id = j.session_id
+          AND f.ts > j.prev_ts
+          AND f.ts <= j.ts
+      )
+      ORDER BY j.ts ASC
+    `,
+    [fromTs, toTs, ...eqFilters.params]
+  );
 }
 
 async function getRealCashFlowEvents(
