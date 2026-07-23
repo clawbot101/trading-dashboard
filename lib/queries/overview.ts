@@ -348,18 +348,42 @@ export async function getOverviewStats(
   const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
   const inceptionTs = equityRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
   const cashFlowSinceInitial = await getCashFlowDelta(inceptionTs, to_ts, venue, strategies);
-  const unrealizedPnlResidual =
-    equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
+  // Prefer live trading_state unrealized when available so the Unrealized card
+  // matches Positions / Hyperliquid (~position uPnL), not residual equity math.
+  const stateUnrealized = Number(stateRow?.total_unrealized_pnl ?? 0);
+  const lifecycleUnrealized = Number(adjustedPnl.unrealized_pnl ?? 0);
+  const unrealizedPnl =
+    Math.abs(stateUnrealized) > 1e-9
+      ? stateUnrealized
+      : Math.abs(lifecycleUnrealized) > 1e-9
+        ? lifecycleUnrealized
+        : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
   const equityPeriodAgo = Number(equityRow?.equity_period_ago ?? equityNow);
   const pnlPeriod = equityNow - equityPeriodAgo - cashFlowPeriod;
   const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
+
+  // Realized: lifecycle fill-based when present; otherwise trading_state realized.
+  const stateRealizedRow = await queryOne<{ realized_pnl: number }>(
+    `
+      SELECT COALESCE(SUM(ts.realized_pnl), 0) AS realized_pnl
+      FROM trading_state ts
+      WHERE 1=1
+      ${stateWhereExtra}
+      ${strategyClause}
+    `,
+    stateParams
+  );
+  const realizedPnl =
+    Math.abs(Number(adjustedPnl.realized_pnl ?? 0)) > 1e-9
+      ? Number(adjustedPnl.realized_pnl ?? 0)
+      : Number(stateRealizedRow?.realized_pnl ?? 0);
 
   return {
     total_equity: equityNow,
     pnl_24h: pnlPeriod,
     pnl_24h_pct: pnlPeriodPct,
-    total_unrealized_pnl: unrealizedPnlResidual,
-    total_realized_pnl: adjustedPnl.realized_pnl,
+    total_unrealized_pnl: unrealizedPnl,
+    total_realized_pnl: realizedPnl,
     total_funding: fundingDelta,
     total_margin: Number(stateRow?.total_margin ?? 0),
     max_drawdown_pct: 0,
