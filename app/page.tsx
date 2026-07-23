@@ -267,17 +267,33 @@ export default function OverviewPage() {
                     }`}
                   >
                     <span className="text-sm font-medium">{s.strategy_name}</span>
-                    <div className="flex items-center gap-3">
-                      <span className="font-num text-sm text-hl-secondary">
-                        {formatUsd(s.notional)}
-                      </span>
-                      <span
-                        className={`font-num text-sm ${
-                          s.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
-                        }`}
-                      >
-                        {formatPnl(s.pnl)}
-                      </span>
+                    <div className="text-right">
+                      <div className="flex items-center justify-end gap-3">
+                        <span className="font-num text-sm text-hl-secondary">
+                          {formatUsd(s.notional)}
+                        </span>
+                        <span
+                          className={`font-num text-sm ${
+                            s.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                          }`}
+                        >
+                          {formatPnl(s.pnl)}
+                        </span>
+                      </div>
+                      <div className="font-num text-[10px] text-hl-muted">
+                        Actual{' '}
+                        <span className={s.return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>
+                          {formatPct(s.return_pct)}
+                        </span>
+                        {' · '}Annualized{' '}
+                        <span
+                          className={
+                            s.annualized_return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                          }
+                        >
+                          {formatPct(s.annualized_return_pct)}
+                        </span>
+                      </div>
                     </div>
                   </button>
                 ))

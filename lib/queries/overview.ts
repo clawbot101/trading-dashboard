@@ -39,6 +39,7 @@ export interface StrategyLeaderboardRow {
   status: string;
   pnl: number;
   return_pct: number;
+  annualized_return_pct: number;
   latest_equity: number;
   notional: number;
 }
@@ -894,11 +895,23 @@ export async function getStrategyLeaderboard(
       const latestTs = r.latest_ts ?? to_ts;
       const cashFlow = await getCashFlowDelta(firstTs, latestTs, venue, [r.strategy_name]);
       const pnl = latestEquity - firstEquity - cashFlow;
+      // Deposits increase capital but not profit. Use contributed capital as the
+      // actual return denominator, then annualize the simple return over the
+      // exact period for which this strategy has snapshots. Simple annualization
+      // stays interpretable for these very short live histories.
+      const capitalBase = firstEquity + Math.max(cashFlow, 0);
+      const returnRate = capitalBase > 0 ? pnl / capitalBase : 0;
+      const elapsedDays = Math.max(
+        (new Date(latestTs).getTime() - new Date(firstTs).getTime()) / 86400000,
+        0
+      );
+      const annualizedRate = elapsedDays > 0 ? returnRate * (365.25 / elapsedDays) : returnRate;
       return {
         strategy_name: r.strategy_name,
         status: r.status || 'unknown',
         pnl,
-        return_pct: latestEquity > 0 ? (pnl / latestEquity) * 100 : 0,
+        return_pct: returnRate * 100,
+        annualized_return_pct: Number.isFinite(annualizedRate) ? annualizedRate * 100 : 0,
         latest_equity: latestEquity,
         notional: Number(r.notional) || 0,
       };
