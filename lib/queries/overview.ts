@@ -811,7 +811,7 @@ export async function getStrategyLeaderboard(
   timeRange = '24H',
   venue?: string
 ): Promise<StrategyLeaderboardRow[]> {
-  const { to_ts } = timeRangeToTimestamps(timeRange);
+  const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue };
   const eqFilters = buildFilters(3, options, true, 'e');
   const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
@@ -851,6 +851,15 @@ export async function getStrategyLeaderboard(
         FROM strategy_equity
         ORDER BY strategy_name, ts ASC
       ),
+      period_baseline AS (
+        SELECT DISTINCT ON (strategy_name)
+          strategy_name,
+          ts AS baseline_ts,
+          total_equity AS baseline_equity
+        FROM strategy_equity
+        WHERE ts <= $2
+        ORDER BY strategy_name, ts DESC
+      ),
       state_notional AS (
         SELECT
           ts.strategy_name,
@@ -862,18 +871,19 @@ export async function getStrategyLeaderboard(
       SELECT
         l.strategy_name,
         'running' AS status,
-        f.first_ts,
+        COALESCE(p.baseline_ts, f.first_ts) AS first_ts,
         l.latest_ts,
-        COALESCE(f.first_equity, l.latest_equity) AS first_equity,
+        COALESCE(p.baseline_equity, f.first_equity, l.latest_equity) AS first_equity,
         l.latest_equity,
         COALESCE(n.notional, 0) AS notional
       FROM latest l
       LEFT JOIN first_equity f ON f.strategy_name = l.strategy_name
+      LEFT JOIN period_baseline p ON p.strategy_name = l.strategy_name
       LEFT JOIN state_notional n ON n.strategy_name = l.strategy_name
       ORDER BY l.latest_equity DESC
       LIMIT 10
     `,
-    [to_ts, ...eqFilters.params]
+    [to_ts, from_ts, ...eqFilters.params]
   );
 
   const withPnl = await Promise.all(

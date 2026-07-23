@@ -24,6 +24,7 @@ export default function OverviewPage() {
   const [chartView, setChartView] = useState<'equity' | 'pnl'>('pnl');
   const [activityPage, setActivityPage] = useState(1);
   const [selectedStrategy, setSelectedStrategy] = useState<string>('all');
+  const periodLabel = timeRange === 'ALL' ? 'Since Start' : `Since ${timeRange}`;
 
   const { data, error, isLoading } = useSWR(
     `/api/overview?range=${timeRange.toLowerCase()}&strategy=${encodeURIComponent(selectedStrategy)}`,
@@ -73,8 +74,10 @@ export default function OverviewPage() {
   // Compute PnL curve from equity curve
   const pnlCurve = useMemo(() => {
     if (!displayEquityCurve.length) return [];
-    // Since-inception baseline: match account's initial equity (e.g. ~999 at start).
-    const inceptionEquity = stats?.initial_equity ?? displayEquityCurve[0]?.equity ?? 0;
+    const baselineEquity =
+      timeRange === 'ALL'
+        ? stats?.initial_equity ?? displayEquityCurve[0]?.equity ?? 0
+        : displayEquityCurve[0]?.equity ?? 0;
     const sortedFlows = [...cashFlowEvents]
       .filter((e: any) => e?.ts != null && e?.amount != null)
       .sort((a: any, b: any) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
@@ -95,11 +98,11 @@ export default function OverviewPage() {
 
       out.push({
         ts: p.ts,
-        pnl: equityValue - inceptionEquity - cumulativeCashFlow,
+        pnl: equityValue - baselineEquity - cumulativeCashFlow,
       });
     }
     return out;
-  }, [displayEquityCurve, stats?.initial_equity, cashFlowEvents]);
+  }, [displayEquityCurve, stats?.initial_equity, cashFlowEvents, timeRange]);
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -205,7 +208,7 @@ export default function OverviewPage() {
                     : 'bg-hl-hover text-hl-secondary'
                 }`}
               >
-                PnL (Since Start)
+                PnL ({periodLabel})
               </button>
             </div>
             <div className="text-xs text-hl-muted">
@@ -219,7 +222,12 @@ export default function OverviewPage() {
           )}
           {chartView === 'pnl' && (
             <div className="mt-2 text-xs text-hl-muted">
-              Baseline equity: {formatUsd(stats?.initial_equity ?? null)}
+              Baseline equity:{' '}
+              {formatUsd(
+                timeRange === 'ALL'
+                  ? stats?.initial_equity ?? null
+                  : displayEquityCurve[0]?.equity ?? null
+              )}
             </div>
           )}
         </div>
@@ -228,7 +236,9 @@ export default function OverviewPage() {
         <div className="space-y-4">
           {/* Strategy leaderboard */}
           <div className="panel p-4">
-            <div className="text-xs text-hl-secondary mb-2">Strategy Leaderboard (Since Start)</div>
+            <div className="text-xs text-hl-secondary mb-2">
+              Strategy Leaderboard ({periodLabel})
+            </div>
             <div className="space-y-1">
               <button
                 type="button"

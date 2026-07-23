@@ -47,7 +47,10 @@ export async function GET(req: NextRequest) {
       getRecentFills(20),
       getLatestRebalanceStatus(),
     ]);
-    const cashFlowStartTs = stats?.initial_equity_ts ?? equityCurve?.[0]?.ts ?? '2000-01-01T00:00:00Z';
+    const cashFlowStartTs =
+      timeRange === 'ALL'
+        ? stats?.initial_equity_ts ?? equityCurve?.[0]?.ts ?? '2000-01-01T00:00:00Z'
+        : equityCurve?.[0]?.ts ?? stats?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
     const cashFlowEndTs = equityCurve?.[equityCurve.length - 1]?.ts ?? new Date().toISOString();
     const cashFlowEvents = await getCashFlowEvents(cashFlowStartTs, cashFlowEndTs, venue, filters);
 
