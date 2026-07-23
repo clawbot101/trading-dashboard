@@ -944,36 +944,54 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         GROUP BY COALESCE(e.venue, 'unknown'), COALESCE(sess.strategy_name, 'unknown'), e.ts
       ),
-      venue_equity AS (
-        SELECT venue, ts, SUM(equity) AS total_equity
+      keys AS (
+        SELECT DISTINCT venue, strategy_name
         FROM equity_by_key
-        GROUP BY venue, ts
       ),
-      latest AS (
-        SELECT DISTINCT ON (venue)
-          venue,
-          ts AS latest_ts,
-          total_equity
-        FROM venue_equity
-        ORDER BY venue, ts DESC
+      eval_points AS (
+        SELECT 'latest'::text AS point, NOW() AS ref_ts
+        UNION ALL
+        SELECT 'prior'::text AS point, NOW() - INTERVAL '24 hours' AS ref_ts
       ),
-      prior AS (
-        SELECT DISTINCT ON (venue)
+      point_values AS (
+        SELECT
+          ep.point,
+          k.venue,
+          k.strategy_name,
+          p.ts AS asof_ts,
+          p.equity
+        FROM eval_points ep
+        CROSS JOIN keys k
+        LEFT JOIN LATERAL (
+          SELECT ebk.ts, ebk.equity
+          FROM equity_by_key ebk
+          WHERE ebk.venue = k.venue
+            AND ebk.strategy_name = k.strategy_name
+            AND ebk.ts <= ep.ref_ts
+          ORDER BY ebk.ts DESC
+          LIMIT 1
+        ) p ON TRUE
+      ),
+      point_totals AS (
+        SELECT
+          point,
           venue,
-          ts AS prior_ts,
-          total_equity
-        FROM venue_equity
-        WHERE ts <= NOW() - INTERVAL '24 hours'
-        ORDER BY venue, ts DESC
+          MAX(asof_ts) AS ts,
+          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
+        FROM point_values
+        GROUP BY point, venue
       )
       SELECT
         l.venue,
         l.total_equity AS equity,
-        l.latest_ts,
-        COALESCE(p.prior_ts, l.latest_ts - INTERVAL '24 hours') AS prior_ts,
-        COALESCE(p.total_equity, l.total_equity) AS prior_equity
-      FROM latest l
-      LEFT JOIN prior p USING (venue)
+        l.ts AS latest_ts,
+        COALESCE(p.ts, l.ts - INTERVAL '24 hours') AS prior_ts,
+        COALESCE(NULLIF(p.total_equity, 0), l.total_equity) AS prior_equity
+      FROM point_totals l
+      LEFT JOIN point_totals p
+        ON p.venue = l.venue
+       AND p.point = 'prior'
+      WHERE l.point = 'latest'
       ORDER BY l.venue
     `
   );
