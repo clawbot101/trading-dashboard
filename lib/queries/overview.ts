@@ -1531,29 +1531,37 @@ async function getDetectedEquityJumpFlowEvents(
         SELECT
           e.ts,
           e.session_id,
+          COALESCE(e.account_id, e.session_id::text) AS account_key,
           COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
           COALESCE(e.venue, 'unknown') AS venue,
           MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
         ${eqWhere}
-        GROUP BY e.ts, e.session_id, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
+        GROUP BY
+          e.ts,
+          e.session_id,
+          COALESCE(e.account_id, e.session_id::text),
+          COALESCE(sess.strategy_name, 'unknown'),
+          COALESCE(e.venue, 'unknown')
       ),
       with_lag AS (
         SELECT
           ts,
           session_id,
+          account_key,
           strategy_name,
           venue,
           equity,
-          LAG(equity) OVER (PARTITION BY session_id ORDER BY ts) AS prev_equity,
-          LAG(ts) OVER (PARTITION BY session_id ORDER BY ts) AS prev_ts
+          LAG(equity) OVER (PARTITION BY account_key, venue ORDER BY ts) AS prev_equity,
+          LAG(ts) OVER (PARTITION BY account_key, venue ORDER BY ts) AS prev_ts
         FROM equity_raw
       ),
       jumps AS (
         SELECT
           ts,
           session_id,
+          account_key,
           prev_ts,
           (equity - prev_equity) AS amount,
           prev_equity
@@ -1579,11 +1587,14 @@ async function getDetectedEquityJumpFlowEvents(
           AND f.ts <= j.ts
       )
       -- Prefer explicit cash_flows over synthetic jump detection whenever any
-      -- deposit/transfer was recorded in the same equity gap.
+      -- deposit/transfer was recorded for this account/session in the same gap.
       AND NOT EXISTS (
         SELECT 1
         FROM cash_flows cf
-        WHERE cf.session_id = j.session_id
+        WHERE (
+            cf.session_id = j.session_id
+            OR cf.account_id = j.account_key
+          )
           AND cf.ts > j.prev_ts
           AND cf.ts <= j.ts + INTERVAL '1 minute'
       )
