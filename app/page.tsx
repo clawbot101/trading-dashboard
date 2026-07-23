@@ -74,12 +74,22 @@ export default function OverviewPage() {
   // Compute PnL curve from equity curve
   const pnlCurve = useMemo(() => {
     if (!displayEquityCurve.length) return [];
+    // Prefer first non-zero equity when the selected range starts before any data
+    // (e.g. 30D/90D on a young account); otherwise baseline becomes 0 and the
+    // chart looks like ~1000 → ~1200 instead of true period PnL near ~+$200.
+    const firstMeaningful =
+      displayEquityCurve.find((p) => Number(p.equity) > 0) ?? displayEquityCurve[0];
+    const periodBaseline = Number(stats?.equity_24h_ago);
     const baselineEquity =
       timeRange === 'ALL'
-        ? stats?.initial_equity ?? displayEquityCurve[0]?.equity ?? 0
-        : displayEquityCurve[0]?.equity ?? 0;
+        ? stats?.initial_equity ?? firstMeaningful?.equity ?? 0
+        : periodBaseline > 0
+          ? periodBaseline
+          : firstMeaningful?.equity ?? 0;
+    const baselineTs = new Date(firstMeaningful?.ts ?? displayEquityCurve[0].ts).getTime();
     const sortedFlows = [...cashFlowEvents]
       .filter((e: any) => e?.ts != null && e?.amount != null)
+      .filter((e: any) => new Date(e.ts).getTime() > baselineTs)
       .sort((a: any, b: any) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
 
     let flowIdx = 0;
@@ -90,6 +100,8 @@ export default function OverviewPage() {
       const pointTs = new Date(p.ts).getTime();
       const equityValue = Number(p.equity);
       if (!Number.isFinite(pointTs) || !Number.isFinite(equityValue)) continue;
+      // Skip leading empty seeds before the first real equity point.
+      if (pointTs < baselineTs) continue;
 
       while (flowIdx < sortedFlows.length && new Date(sortedFlows[flowIdx].ts).getTime() <= pointTs) {
         cumulativeCashFlow += Number(sortedFlows[flowIdx].amount || 0);
@@ -102,7 +114,7 @@ export default function OverviewPage() {
       });
     }
     return out;
-  }, [displayEquityCurve, stats?.initial_equity, cashFlowEvents, timeRange]);
+  }, [displayEquityCurve, stats?.initial_equity, stats?.equity_24h_ago, cashFlowEvents, timeRange]);
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -226,7 +238,9 @@ export default function OverviewPage() {
               {formatUsd(
                 timeRange === 'ALL'
                   ? stats?.initial_equity ?? null
-                  : displayEquityCurve[0]?.equity ?? null
+                  : Number(stats?.equity_24h_ago) > 0
+                    ? stats?.equity_24h_ago
+                    : displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null
               )}
             </div>
           )}

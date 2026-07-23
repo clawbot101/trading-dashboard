@@ -295,8 +295,11 @@ export async function getOverviewStats(
         COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
         (SELECT ts FROM first_point) AS initial_equity_ts,
         COALESCE((SELECT total_equity FROM first_point), 0) AS initial_equity,
+        -- If the selected window starts before any snapshots exist, baseline
+        -- equity is 0. Fall back to first available equity so period PnL is not
+        -- inflated by treating starting capital as profit.
         COALESCE(
-          (SELECT total_equity FROM baseline_point),
+          NULLIF((SELECT total_equity FROM baseline_point), 0),
           (SELECT total_equity FROM first_point),
           COALESCE((SELECT total_equity FROM latest_point), 0)
         ) AS equity_period_ago
@@ -683,8 +686,12 @@ export async function getEquityCurve(
           AND ts <= $1
       ),
       unioned AS (
+        -- Only seed keys that already had equity at period start. A 0 seed for
+        -- strategies that start later would make the portfolio curve begin at 0
+        -- and inflate PnL charts for ranges longer than available history.
         SELECT strategy_name, venue, $2::timestamptz AS ts, equity
         FROM seed_per_key
+        WHERE equity > 0
         UNION
         SELECT strategy_name, venue, ts, equity
         FROM in_range
