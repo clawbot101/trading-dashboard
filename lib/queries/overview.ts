@@ -215,100 +215,21 @@ export async function getOverviewStats(
   const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue, strategies };
 
-  const eqFilters = buildFilters(3, options, true, 'e');
-  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
-
-  // Top-level net PnL strictly from equity snapshots:
-  // net_pnl(t0, t1) = equity(t1) - equity(t0)
-  const equityRow = await queryOne<any>(
-    `
-      WITH equity_by_key AS (
-        SELECT
-          e.ts,
-          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
-          COALESCE(e.venue, 'unknown') AS venue,
-          MAX(e.equity) AS equity
-        FROM equity_snapshots e
-        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-        ${eqWhere}
-        GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
-      ),
-      keys AS (
-        SELECT DISTINCT strategy_name, venue
-        FROM equity_by_key
-      ),
-      first_ts AS (
-        SELECT MIN(ts) AS ts
-        FROM equity_by_key
-      ),
-      eval_points AS (
-        SELECT 'latest'::text AS point, $1::timestamptz AS ref_ts
-        UNION ALL
-        SELECT 'baseline'::text AS point, $2::timestamptz AS ref_ts
-        UNION ALL
-        SELECT 'first'::text AS point, (SELECT ts FROM first_ts)
-      ),
-      point_values AS (
-        SELECT
-          ep.point,
-          ep.ref_ts,
-          k.strategy_name,
-          k.venue,
-          p.ts AS asof_ts,
-          p.equity
-        FROM eval_points ep
-        CROSS JOIN keys k
-        LEFT JOIN LATERAL (
-          SELECT ebk.ts, ebk.equity
-          FROM equity_by_key ebk
-          WHERE ebk.strategy_name = k.strategy_name
-            AND ebk.venue = k.venue
-            AND ebk.ts <= ep.ref_ts
-          ORDER BY ebk.ts DESC
-          LIMIT 1
-        ) p ON TRUE
-      ),
-      point_totals AS (
-        SELECT
-          point,
-          MAX(asof_ts) AS ts,
-          COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
-        FROM point_values
-        GROUP BY point
-      ),
-      latest_point AS (
-        SELECT ts, total_equity
-        FROM point_totals
-        WHERE point = 'latest'
-      ),
-      baseline_point AS (
-        SELECT ts, total_equity
-        FROM point_totals
-        WHERE point = 'baseline'
-      ),
-      first_point AS (
-        SELECT ts, total_equity
-        FROM point_totals
-        WHERE point = 'first'
-      )
-      SELECT
-        COALESCE((SELECT total_equity FROM latest_point), (SELECT total_equity FROM first_point), 0) AS total_equity,
-        (SELECT ts FROM first_point) AS initial_equity_ts,
-        COALESCE((SELECT total_equity FROM first_point), 0) AS initial_equity,
-        -- If the selected window starts before any snapshots exist, baseline
-        -- equity is 0. Fall back to first available equity so period PnL is not
-        -- inflated by treating starting capital as profit.
-        COALESCE(
-          NULLIF((SELECT total_equity FROM baseline_point), 0),
-          (SELECT total_equity FROM first_point),
-          COALESCE((SELECT total_equity FROM latest_point), 0)
-        ) AS equity_period_ago
-    `,
-    [to_ts, from_ts, ...eqFilters.params]
-  );
+  // Bound the heavy snapshot scan: latest/baseline only need recent history.
+  // First-ever equity is a cheap separate DISTINCT ON query.
+  const eqFiltersRecent = buildFilters(3, options, true, 'e');
+  const recentWhereExtra = eqFiltersRecent.clauses.length
+    ? `AND ${eqFiltersRecent.clauses.join(' AND ')}`
+    : '';
+  const eqFiltersFirst = buildFilters(1, options, true, 'e');
+  const firstWhere = eqFiltersFirst.clauses.length
+    ? `WHERE ${eqFiltersFirst.clauses.join(' AND ')}`
+    : '';
 
   const stateFilters = buildFilters(1, options, false, 'ts');
-  const stateWhereExtra = stateFilters.clauses.length ? `AND ${stateFilters.clauses.join(' AND ')}` : '';
+  const stateWhereExtra = stateFilters.clauses.length
+    ? `AND ${stateFilters.clauses.join(' AND ')}`
+    : '';
   const strategiesFilter = normalizeStrategies(strategies);
   const strategyClause = strategiesFilter?.length
     ? `AND ts.strategy_name = ANY($${stateFilters.params.length + 1}::text[])`
@@ -317,66 +238,210 @@ export async function getOverviewStats(
     ? [...stateFilters.params, strategiesFilter]
     : stateFilters.params;
 
-  const stateRow = await queryOne<any>(
-    `
-      SELECT
-        COALESCE(SUM(ts.unrealized_pnl), 0) AS total_unrealized_pnl,
-        COALESCE(SUM(ts.margin), 0) AS total_margin,
-        COUNT(*) FILTER (WHERE ts.position_qty != 0) AS open_positions,
-        COALESCE(
-          SUM(
-            CASE
-              WHEN ts.position_qty != 0 THEN COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))
-              ELSE 0
-            END
-          ),
-          0
-        ) AS gross_exposure
-      FROM trading_state ts
-      WHERE 1=1
-      ${stateWhereExtra}
-      ${strategyClause}
-    `,
-    stateParams
-  );
+  // ALL: cash flows must be per-strategy after each first equity snapshot
+  // (same as leaderboard). A global from=2000 would also subtract inception
+  // funding already embedded in initial_equity → fake PnL ≈ -sum(deposits).
+  const cashFlowPromise =
+    timeRange === 'ALL'
+      ? getCashFlowDeltaAfterFirstEquity(to_ts, venue, strategies)
+      : getCashFlowDelta(from_ts, to_ts, venue, strategies);
 
-  const fundingDelta = await getFundingDelta(from_ts, to_ts, venue, strategies);
-  const cashFlowPeriod = await getCashFlowDelta(from_ts, to_ts, venue, strategies);
-  const adjustedPnl = await getAdjustedPnlSummary(to_ts, venue, strategies);
+  const [
+    equityRow,
+    firstRow,
+    stateRow,
+    fundingDelta,
+    cashFlowPeriod,
+    stateRealizedRow,
+  ] = await Promise.all([
+
+    queryOne<any>(
+      `
+        WITH equity_by_key AS (
+          SELECT
+            e.ts,
+            COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+            COALESCE(e.venue, 'unknown') AS venue,
+            MAX(e.equity) AS equity
+          FROM equity_snapshots e
+          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          WHERE e.ts > $2::timestamptz - INTERVAL '90 days'
+            AND e.ts <= $1
+            ${recentWhereExtra}
+          GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
+        ),
+        keys AS (
+          SELECT DISTINCT strategy_name, venue
+          FROM equity_by_key
+        ),
+        eval_points AS (
+          SELECT 'latest'::text AS point, $1::timestamptz AS ref_ts
+          UNION ALL
+          SELECT 'baseline'::text AS point, $2::timestamptz AS ref_ts
+        ),
+        point_values AS (
+          SELECT
+            ep.point,
+            k.strategy_name,
+            k.venue,
+            p.ts AS asof_ts,
+            COALESCE(p.equity, 0)
+              + CASE
+                  WHEN ep.point = 'baseline' THEN COALESCE(pending.cf, 0)
+                  ELSE 0
+                END AS equity
+          FROM eval_points ep
+          CROSS JOIN keys k
+          LEFT JOIN LATERAL (
+            SELECT ebk.ts, ebk.equity
+            FROM equity_by_key ebk
+            WHERE ebk.strategy_name = k.strategy_name
+              AND ebk.venue = k.venue
+              AND ebk.ts <= ep.ref_ts
+            ORDER BY ebk.ts DESC
+            LIMIT 1
+          ) p ON TRUE
+          LEFT JOIN LATERAL (
+            SELECT COALESCE(SUM(
+              CASE
+                WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
+                WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in')
+                  THEN ABS(COALESCE(cf.amount, 0))
+                WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out')
+                  THEN -ABS(COALESCE(cf.amount, 0))
+                ELSE COALESCE(cf.amount, 0)
+              END
+            ), 0) AS cf
+            FROM cash_flows cf
+            LEFT JOIN trading_sessions sess ON cf.session_id = sess.session_id
+            WHERE ep.point = 'baseline'
+              AND COALESCE(sess.strategy_name, 'unknown') = k.strategy_name
+              AND COALESCE(cf.venue, k.venue) = k.venue
+              AND cf.ts > COALESCE(p.ts, TIMESTAMPTZ '-infinity')
+              AND cf.ts <= ep.ref_ts
+          ) pending ON TRUE
+        ),
+        point_totals AS (
+          SELECT
+            point,
+            COALESCE(SUM(COALESCE(equity, 0)), 0) AS total_equity
+          FROM point_values
+          GROUP BY point
+        )
+        SELECT
+          COALESCE((SELECT total_equity FROM point_totals WHERE point = 'latest'), 0) AS total_equity,
+          COALESCE(
+            NULLIF((SELECT total_equity FROM point_totals WHERE point = 'baseline'), 0),
+            COALESCE((SELECT total_equity FROM point_totals WHERE point = 'latest'), 0)
+          ) AS equity_period_ago
+      `,
+      [to_ts, from_ts, ...eqFiltersRecent.params]
+    ),
+    queryOne<any>(
+      `
+        WITH first_per_key AS (
+          SELECT DISTINCT ON (COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown'))
+            e.ts,
+            COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+            COALESCE(e.venue, 'unknown') AS venue,
+            e.equity
+          FROM equity_snapshots e
+          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          ${firstWhere}
+          ORDER BY
+            COALESCE(sess.strategy_name, 'unknown'),
+            COALESCE(e.venue, 'unknown'),
+            e.ts ASC
+        )
+        SELECT
+          MIN(ts) AS initial_equity_ts,
+          COALESCE(SUM(equity), 0) AS initial_equity
+        FROM first_per_key
+      `,
+      eqFiltersFirst.params
+    ),
+    queryOne<any>(
+      `
+        SELECT
+          COALESCE(SUM(ts.unrealized_pnl), 0) AS total_unrealized_pnl,
+          COALESCE(SUM(ts.margin), 0) AS total_margin,
+          COUNT(*) FILTER (WHERE ts.position_qty != 0) AS open_positions,
+          COALESCE(
+            SUM(
+              CASE
+                WHEN ts.position_qty != 0 THEN COALESCE(
+                  ts.position_notional_usd,
+                  ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0))
+                )
+                ELSE 0
+              END
+            ),
+            0
+          ) AS gross_exposure
+        FROM trading_state ts
+        WHERE 1=1
+        ${stateWhereExtra}
+        ${strategyClause}
+      `,
+      stateParams
+    ),
+    getFundingDelta(from_ts, to_ts, venue, strategies),
+    cashFlowPromise,
+    queryOne<{ realized_pnl: number }>(
+      `
+        SELECT COALESCE(SUM(ts.realized_pnl), 0) AS realized_pnl
+        FROM trading_state ts
+        WHERE 1=1
+        ${stateWhereExtra}
+        ${strategyClause}
+      `,
+      stateParams
+    ),
+  ]);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
-  const initialEquity = Number(equityRow?.initial_equity ?? equityNow);
-  const inceptionTs = equityRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
-  const cashFlowSinceInitial = await getCashFlowDelta(inceptionTs, to_ts, venue, strategies);
-  // Prefer live trading_state unrealized when available so the Unrealized card
-  // matches Positions / Hyperliquid (~position uPnL), not residual equity math.
+  const initialEquity = Number(firstRow?.initial_equity ?? equityNow);
+  const inceptionTs = firstRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
   const stateUnrealized = Number(stateRow?.total_unrealized_pnl ?? 0);
+  const stateRealized = Number(stateRealizedRow?.realized_pnl ?? 0);
+
+  // Lifecycle fill accounting is expensive; only run it when trading_state is empty.
+  let adjustedPnl = { realized_pnl: 0, unrealized_pnl: 0 };
+  if (Math.abs(stateUnrealized) <= 1e-9 && Math.abs(stateRealized) <= 1e-9) {
+    adjustedPnl = await getAdjustedPnlSummary(to_ts, venue, strategies);
+  }
   const lifecycleUnrealized = Number(adjustedPnl.unrealized_pnl ?? 0);
+
+  // Skip expensive since-inception cash-flow scan when live unrealized exists.
+  let cashFlowSinceInitial = 0;
+  if (Math.abs(stateUnrealized) <= 1e-9 && Math.abs(lifecycleUnrealized) <= 1e-9) {
+    cashFlowSinceInitial = await getCashFlowDelta(inceptionTs, to_ts, venue, strategies);
+  }
+
   const unrealizedPnl =
     Math.abs(stateUnrealized) > 1e-9
       ? stateUnrealized
       : Math.abs(lifecycleUnrealized) > 1e-9
         ? lifecycleUnrealized
         : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
-  const equityPeriodAgo = Number(equityRow?.equity_period_ago ?? equityNow);
+
+  // ALL uses inception equity as baseline. A zero/missing period baseline (e.g.
+  // from_ts=2000 with a bounded snapshot scan) must not fall back to "latest",
+  // or PnL becomes -sum(deposits).
+  let equityPeriodAgo = Number(equityRow?.equity_period_ago ?? 0);
+  if (timeRange === 'ALL' || equityPeriodAgo <= 0) {
+    equityPeriodAgo = initialEquity > 0 ? initialEquity : equityNow;
+  }
+
   const pnlPeriod = equityNow - equityPeriodAgo - cashFlowPeriod;
   const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
 
-  // Realized: lifecycle fill-based when present; otherwise trading_state realized.
-  const stateRealizedRow = await queryOne<{ realized_pnl: number }>(
-    `
-      SELECT COALESCE(SUM(ts.realized_pnl), 0) AS realized_pnl
-      FROM trading_state ts
-      WHERE 1=1
-      ${stateWhereExtra}
-      ${strategyClause}
-    `,
-    stateParams
-  );
   const realizedPnl =
-    Math.abs(Number(adjustedPnl.realized_pnl ?? 0)) > 1e-9
-      ? Number(adjustedPnl.realized_pnl ?? 0)
-      : Number(stateRealizedRow?.realized_pnl ?? 0);
+    Math.abs(stateRealized) > 1e-9
+      ? stateRealized
+      : Math.abs(Number(adjustedPnl.realized_pnl ?? 0)) > 1e-9
+        ? Number(adjustedPnl.realized_pnl ?? 0)
+        : 0;
 
   return {
     total_equity: equityNow,
@@ -391,7 +456,7 @@ export async function getOverviewStats(
     gross_exposure: Number(stateRow?.gross_exposure ?? 0),
     equity_24h_ago: equityPeriodAgo,
     initial_equity: initialEquity,
-    initial_equity_ts: equityRow?.initial_equity_ts ?? null,
+    initial_equity_ts: inceptionTs,
     cash_flow_period: cashFlowPeriod,
   };
 }
@@ -667,6 +732,32 @@ export async function getEquityCurve(
   }
 
   const eqFilters = buildFilters(3, options, true, 'e');
+  const includePendingCashFlows = await hasCashFlowsTable();
+  // When the bot is down, deposits can be written to cash_flows before the next
+  // equity snapshot. Fold those pending flows into the period-start seed so the
+  // chart does not treat the later catch-up equity jump as trading PnL.
+  const seedEquityExpr = includePendingCashFlows
+    ? `
+          COALESCE(last_eq.equity, 0) + COALESCE((
+            SELECT SUM(
+              CASE
+                WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
+                WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in')
+                  THEN ABS(COALESCE(cf.amount, 0))
+                WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out')
+                  THEN -ABS(COALESCE(cf.amount, 0))
+                ELSE COALESCE(cf.amount, 0)
+              END
+            )
+            FROM cash_flows cf
+            LEFT JOIN trading_sessions sess ON cf.session_id = sess.session_id
+            WHERE COALESCE(sess.strategy_name, 'unknown') = k.strategy_name
+              AND COALESCE(cf.venue, k.venue) = k.venue
+              AND cf.ts > COALESCE(last_eq.ts, TIMESTAMPTZ '-infinity')
+              AND cf.ts <= $2
+          ), 0)
+      `
+    : `COALESCE(last_eq.equity, 0)`;
 
   const rows = await query<EquityCurvePoint>(
     `
@@ -689,19 +780,17 @@ export async function getEquityCurve(
         SELECT
           k.strategy_name,
           k.venue,
-          COALESCE(
-            (
-              SELECT ebk.equity
-              FROM equity_by_key_all ebk
-              WHERE ebk.strategy_name = k.strategy_name
-                AND ebk.venue = k.venue
-                AND ebk.ts <= $2
-              ORDER BY ebk.ts DESC
-              LIMIT 1
-            ),
-            0
-          ) AS equity
+          ${seedEquityExpr} AS equity
         FROM keys k
+        LEFT JOIN LATERAL (
+          SELECT ebk.equity, ebk.ts
+          FROM equity_by_key_all ebk
+          WHERE ebk.strategy_name = k.strategy_name
+            AND ebk.venue = k.venue
+            AND ebk.ts <= $2
+          ORDER BY ebk.ts DESC
+          LIMIT 1
+        ) last_eq ON TRUE
       ),
       in_range AS (
         SELECT strategy_name, venue, ts, equity
@@ -1456,16 +1545,54 @@ async function getCashFlowDelta(
   strategies?: string[]
 ): Promise<number> {
   const options: QueryFilters = { venue, strategies };
-  const realDelta = await getRealCashFlowDelta(fromTs, toTs, options);
-  const inceptionFlows = await getStrategyInceptionFlowEvents(fromTs, toTs, options);
+  const [realDelta, inceptionFlows, jumpFlows, realFlows] = await Promise.all([
+    getRealCashFlowDelta(fromTs, toTs, options),
+    getStrategyInceptionFlowEvents(fromTs, toTs, options),
+    getDetectedEquityJumpFlowEvents(fromTs, toTs, options),
+    getRealCashFlowEvents(fromTs, toTs, options),
+  ]);
   const inceptionDelta = inceptionFlows.reduce((acc, f) => acc + Number(f.amount || 0), 0);
-  const jumpFlows = await getDetectedEquityJumpFlowEvents(fromTs, toTs, options);
-  const realFlows = await getRealCashFlowEvents(fromTs, toTs, options);
   const jumpDelta = dedupeCashFlowsAgainstKnown(jumpFlows, realFlows).reduce(
     (acc, f) => acc + Number(f.amount || 0),
     0
   );
   return realDelta + inceptionDelta + jumpDelta;
+}
+
+/**
+ * Portfolio cash-flow since each strategy's own first equity snapshot.
+ * Matches leaderboard PnL: excludes seed capital already in initial_equity.
+ */
+async function getCashFlowDeltaAfterFirstEquity(
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<number> {
+  const options: QueryFilters = { venue, strategies };
+  const eqFilters = buildFilters(1, options, true, 'e');
+  const firstWhere = eqFilters.clauses.length
+    ? `WHERE ${eqFilters.clauses.join(' AND ')}`
+    : '';
+  const firstRows = await query<{ strategy_name: string; first_ts: string }>(
+    `
+      SELECT DISTINCT ON (COALESCE(sess.strategy_name, 'unknown'))
+        COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+        e.ts AS first_ts
+      FROM equity_snapshots e
+      LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+      ${firstWhere}
+      ORDER BY COALESCE(sess.strategy_name, 'unknown'), e.ts ASC
+    `,
+    eqFilters.params
+  );
+  if (!firstRows.length) return 0;
+
+  const deltas = await Promise.all(
+    firstRows.map((r) =>
+      getCashFlowDelta(r.first_ts, toTs, venue, [r.strategy_name])
+    )
+  );
+  return deltas.reduce((sum, d) => sum + d, 0);
 }
 
 /** Absolute USD threshold for treating an equity jump as a deposit/withdrawal. */
@@ -1523,7 +1650,6 @@ async function getDetectedEquityJumpFlowEvents(
   options: QueryFilters
 ): Promise<CashFlowEvent[]> {
   const eqFilters = buildFilters(3, options, true, 'e');
-  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
 
   return query<CashFlowEvent>(
     `
@@ -1537,7 +1663,9 @@ async function getDetectedEquityJumpFlowEvents(
           MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-        ${eqWhere}
+        WHERE e.ts > $1::timestamptz - INTERVAL '90 days'
+          AND e.ts <= $2
+          ${eqFilters.clauses.length ? `AND ${eqFilters.clauses.join(' AND ')}` : ''}
         GROUP BY
           e.ts,
           e.session_id,
@@ -1563,7 +1691,7 @@ async function getDetectedEquityJumpFlowEvents(
           session_id,
           account_key,
           prev_ts,
-          (equity - prev_equity) AS amount,
+          (equity - prev_equity) AS raw_amount,
           prev_equity
         FROM with_lag
         WHERE prev_equity IS NOT NULL
@@ -1574,30 +1702,58 @@ async function getDetectedEquityJumpFlowEvents(
             ABS(equity - prev_equity) >= 200
             OR ABS(equity - prev_equity) / NULLIF(ABS(prev_equity), 0) >= ${EQUITY_JUMP_REL_MIN}
           )
+      ),
+      jumps_with_residual AS (
+        SELECT
+          j.ts,
+          j.session_id,
+          j.account_key,
+          j.prev_ts,
+          j.raw_amount,
+          j.prev_equity,
+          -- Subtract every known flow in the snapshot gap. Period-start seed /
+          -- baseline already folds pre-window deposits into starting equity, so
+          -- the catch-up jump must not emit another synthetic for the same money.
+          j.raw_amount - COALESCE((
+            SELECT SUM(
+              CASE
+                WHEN cf.flow_type IS NULL THEN COALESCE(cf.amount, 0)
+                WHEN LOWER(cf.flow_type) IN ('deposit', 'inflow', 'credit', 'transfer_in')
+                  THEN ABS(COALESCE(cf.amount, 0))
+                WHEN LOWER(cf.flow_type) IN ('withdraw', 'withdrawal', 'outflow', 'debit', 'transfer_out')
+                  THEN -ABS(COALESCE(cf.amount, 0))
+                ELSE COALESCE(cf.amount, 0)
+              END
+            )
+            FROM cash_flows cf
+            WHERE (
+                cf.session_id = j.session_id
+                OR cf.account_id = j.account_key
+              )
+              -- Tight window only: a 1-minute lookahead previously pulled the *next*
+              -- deposit into this jump's residual (e.g. +99 jump minus upcoming
+              -- +4899 deposit => false -4899 synthetic that cancels real capital).
+              AND cf.ts > j.prev_ts
+              AND cf.ts <= j.ts + INTERVAL '2 seconds'
+          ), 0) AS amount
+        FROM jumps j
       )
       SELECT
         j.ts,
         j.amount
-      FROM jumps j
-      WHERE NOT EXISTS (
-        SELECT 1
-        FROM fills f
-        WHERE f.session_id = j.session_id
-          AND f.ts > j.prev_ts
-          AND f.ts <= j.ts
-      )
-      -- Prefer explicit cash_flows over synthetic jump detection whenever any
-      -- deposit/transfer was recorded for this account/session in the same gap.
-      AND NOT EXISTS (
-        SELECT 1
-        FROM cash_flows cf
-        WHERE (
-            cf.session_id = j.session_id
-            OR cf.account_id = j.account_key
-          )
-          AND cf.ts > j.prev_ts
-          AND cf.ts <= j.ts + INTERVAL '1 minute'
-      )
+      FROM jumps_with_residual j
+      WHERE ABS(j.amount) >= ${EQUITY_JUMP_ABS_MIN}
+        AND (
+          ABS(j.amount) >= 200
+          OR ABS(j.amount) / NULLIF(ABS(j.prev_equity), 0) >= ${EQUITY_JUMP_REL_MIN}
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM fills f
+          WHERE f.session_id = j.session_id
+            AND f.ts > j.prev_ts
+            AND f.ts <= j.ts
+        )
       ORDER BY j.ts ASC
     `,
     [fromTs, toTs, ...eqFilters.params]

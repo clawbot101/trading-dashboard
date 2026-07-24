@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import { useState, useMemo, useEffect } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
+import { buildPnlCurve, alignCashFlowsToEquityCatchUp } from '../lib/pnlCurve';
 
 const fetcher = async (url: string) => {
   const r = await fetch(url);
@@ -71,50 +72,29 @@ export default function OverviewPage() {
 
   const displayEquityCurve = useMemo(() => normalizeEquityCurve(equityCurve), [equityCurve]);
 
-  // Compute PnL curve from equity curve
+  // Compute PnL curve from equity curve (deposits excluded via cashFlowEvents)
   const pnlCurve = useMemo(() => {
     if (!displayEquityCurve.length) return [];
-    // Prefer first non-zero equity when the selected range starts before any data
-    // (e.g. 30D/90D on a young account); otherwise baseline becomes 0 and the
-    // chart looks like ~1000 → ~1200 instead of true period PnL near ~+$200.
     const firstMeaningful =
       displayEquityCurve.find((p) => Number(p.equity) > 0) ?? displayEquityCurve[0];
     const periodBaseline = Number(stats?.equity_24h_ago);
+    // ALL equity curve is cumulative from 0 (each strategy's first print is a
+    // delta). Baseline must be the first curve point — NOT sum(initial_equity),
+    // which would double-count later strategies' seed capital vs inception CFs.
     const baselineEquity =
       timeRange === 'ALL'
-        ? stats?.initial_equity ?? firstMeaningful?.equity ?? 0
+        ? firstMeaningful?.equity ?? 0
         : periodBaseline > 0
           ? periodBaseline
           : firstMeaningful?.equity ?? 0;
-    const baselineTs = new Date(firstMeaningful?.ts ?? displayEquityCurve[0].ts).getTime();
-    const sortedFlows = [...cashFlowEvents]
-      .filter((e: any) => e?.ts != null && e?.amount != null)
-      .filter((e: any) => new Date(e.ts).getTime() > baselineTs)
-      .sort((a: any, b: any) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
 
-    let flowIdx = 0;
-    let cumulativeCashFlow = 0;
-
-    const out: Array<{ ts: string; pnl: number }> = [];
-    for (const p of displayEquityCurve) {
-      const pointTs = new Date(p.ts).getTime();
-      const equityValue = Number(p.equity);
-      if (!Number.isFinite(pointTs) || !Number.isFinite(equityValue)) continue;
-      // Skip leading empty seeds before the first real equity point.
-      if (pointTs < baselineTs) continue;
-
-      while (flowIdx < sortedFlows.length && new Date(sortedFlows[flowIdx].ts).getTime() <= pointTs) {
-        cumulativeCashFlow += Number(sortedFlows[flowIdx].amount || 0);
-        flowIdx += 1;
-      }
-
-      out.push({
-        ts: p.ts,
-        pnl: equityValue - baselineEquity - cumulativeCashFlow,
-      });
-    }
-    return out;
-  }, [displayEquityCurve, stats?.initial_equity, stats?.equity_24h_ago, cashFlowEvents, timeRange]);
+    return buildPnlCurve({
+      equityCurve: displayEquityCurve,
+      cashFlowEvents: alignCashFlowsToEquityCatchUp(displayEquityCurve, cashFlowEvents),
+      baselineEquity,
+      baselineTs: firstMeaningful?.ts,
+    });
+  }, [displayEquityCurve, stats?.equity_24h_ago, cashFlowEvents, timeRange]);
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -232,18 +212,25 @@ export default function OverviewPage() {
           ) : (
             <PnlChart data={pnlCurve} height={256} />
           )}
-          {chartView === 'pnl' && (
-            <div className="mt-2 text-xs text-hl-muted">
-              Baseline equity:{' '}
-              {formatUsd(
-                timeRange === 'ALL'
-                  ? stats?.initial_equity ?? null
-                  : Number(stats?.equity_24h_ago) > 0
-                    ? stats?.equity_24h_ago
-                    : displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null
-              )}
-            </div>
-          )}
+          <div className="mt-2 text-xs text-hl-muted">
+            {chartView === 'equity' ? (
+              <>
+                Account equity (wallet balance). Deposits raise this line; they are not
+                trading profit.
+              </>
+            ) : (
+              <>
+                Trading PnL only (equity change minus deposits/withdrawals). Baseline:{' '}
+                {formatUsd(
+                  timeRange === 'ALL'
+                    ? displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null
+                    : Number(stats?.equity_24h_ago) > 0
+                      ? stats?.equity_24h_ago
+                      : displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null
+                )}
+              </>
+            )}
+          </div>
         </div>
 
         {/* Right column (1/3) */}
@@ -252,6 +239,10 @@ export default function OverviewPage() {
           <div className="panel p-4">
             <div className="text-xs text-hl-secondary mb-2">
               Strategy Leaderboard ({periodLabel})
+            </div>
+            <div className="flex items-center justify-end gap-3 px-2 mb-1 text-[10px] text-hl-muted">
+              <span>Equity</span>
+              <span>PnL</span>
             </div>
             <div className="space-y-1">
               <button
@@ -283,23 +274,25 @@ export default function OverviewPage() {
                     <span className="text-sm font-medium">{s.strategy_name}</span>
                     <div className="text-right">
                       <div className="flex items-center justify-end gap-3">
-                        <span className="font-num text-sm text-hl-secondary">
-                          {formatUsd(s.notional)}
+                        <span className="font-num text-sm text-hl-secondary" title="Account equity">
+                          {formatUsd(s.latest_equity)}
                         </span>
                         <span
                           className={`font-num text-sm ${
                             s.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
                           }`}
+                          title="Trading PnL for selected range"
                         >
                           {formatPnl(s.pnl)}
                         </span>
                       </div>
                       <div className="font-num text-[10px] text-hl-muted">
-                        Actual{' '}
+                        Notional {formatUsd(s.notional)}
+                        {' · '}Actual{' '}
                         <span className={s.return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>
                           {formatPct(s.return_pct)}
                         </span>
-                        {' · '}Annualized{' '}
+                        {' · '}Ann.{' '}
                         <span
                           className={
                             s.annualized_return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'

@@ -12,6 +12,7 @@ import {
   getRecentFills,
   getLatestRebalanceStatus,
   getCashFlowEvents,
+  timeRangeToTimestamps,
 } from '../../../lib/queries/overview';
 
 export const runtime = "nodejs";
@@ -32,6 +33,7 @@ export async function GET(req: NextRequest) {
     const strategy = q.strategy === 'all' ? undefined : q.strategy;
     const timeRange = q.range.toUpperCase();
     const filters = strategy ? [strategy] : undefined;
+    const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
     const [
       stats,
       equityCurve,
@@ -39,6 +41,7 @@ export async function GET(req: NextRequest) {
       venueSplit,
       recentFills,
       rebalanceStatus,
+      cashFlowEvents,
     ] = await Promise.all([
       getOverviewStats(timeRange, venue, filters),
       getEquityCurve(timeRange, venue, filters),
@@ -46,13 +49,9 @@ export async function GET(req: NextRequest) {
       getVenueSplit(),
       getRecentFills(20),
       getLatestRebalanceStatus(),
+      // Parallel with stats/curve (was sequential and added latency to every load).
+      getCashFlowEvents(from_ts, to_ts, venue, filters),
     ]);
-    const cashFlowStartTs =
-      timeRange === 'ALL'
-        ? stats?.initial_equity_ts ?? equityCurve?.[0]?.ts ?? '2000-01-01T00:00:00Z'
-        : equityCurve?.[0]?.ts ?? stats?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
-    const cashFlowEndTs = equityCurve?.[equityCurve.length - 1]?.ts ?? new Date().toISOString();
-    const cashFlowEvents = await getCashFlowEvents(cashFlowStartTs, cashFlowEndTs, venue, filters);
 
     return NextResponse.json({
       ok: true,
