@@ -238,9 +238,10 @@ export async function getOverviewStats(
     ? [...stateFilters.params, strategiesFilter]
     : stateFilters.params;
 
-  // ALL: cash flows must be per-strategy after each first equity snapshot
-  // (same as leaderboard). A global from=2000 would also subtract inception
-  // funding already embedded in initial_equity → fake PnL ≈ -sum(deposits).
+  // When history is shorter than the selected window (e.g. 30D/90D on a young
+  // account), there is no equity at from_ts. Falling back to "latest" makes
+  // PnL = -sum(deposits) (~-$20k). Use the same inception baseline + CF-after-
+  // first-equity math as ALL / leaderboard instead.
   const cashFlowPromise =
     timeRange === 'ALL'
       ? getCashFlowDeltaAfterFirstEquity(to_ts, venue, strategies)
@@ -251,7 +252,7 @@ export async function getOverviewStats(
     firstRow,
     stateRow,
     fundingDelta,
-    cashFlowPeriod,
+    cashFlowPeriodRaw,
     stateRealizedRow,
   ] = await Promise.all([
 
@@ -330,10 +331,16 @@ export async function getOverviewStats(
         )
         SELECT
           COALESCE((SELECT total_equity FROM point_totals WHERE point = 'latest'), 0) AS total_equity,
+          -- Do NOT coalesce missing baseline to latest (that yields PnL = -deposits).
+          COALESCE((SELECT total_equity FROM point_totals WHERE point = 'baseline'), 0) AS equity_period_ago,
           COALESCE(
-            NULLIF((SELECT total_equity FROM point_totals WHERE point = 'baseline'), 0),
-            COALESCE((SELECT total_equity FROM point_totals WHERE point = 'latest'), 0)
-          ) AS equity_period_ago
+            (
+              SELECT COUNT(*)::int
+              FROM point_values
+              WHERE point = 'baseline' AND asof_ts IS NOT NULL
+            ),
+            0
+          ) AS baseline_snapshot_count
       `,
       [to_ts, from_ts, ...eqFiltersRecent.params]
     ),
@@ -404,6 +411,7 @@ export async function getOverviewStats(
   const inceptionTs = firstRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
   const stateUnrealized = Number(stateRow?.total_unrealized_pnl ?? 0);
   const stateRealized = Number(stateRealizedRow?.realized_pnl ?? 0);
+  const baselineSnapshotCount = Number(equityRow?.baseline_snapshot_count ?? 0);
 
   // Lifecycle fill accounting is expensive; only run it when trading_state is empty.
   let adjustedPnl = { realized_pnl: 0, unrealized_pnl: 0 };
@@ -425,12 +433,21 @@ export async function getOverviewStats(
         ? lifecycleUnrealized
         : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
 
-  // ALL uses inception equity as baseline. A zero/missing period baseline (e.g.
-  // from_ts=2000 with a bounded snapshot scan) must not fall back to "latest",
-  // or PnL becomes -sum(deposits).
+  const historyStartsInsideWindow =
+    timeRange !== 'ALL' &&
+    baselineSnapshotCount <= 0 &&
+    new Date(inceptionTs).getTime() > new Date(from_ts).getTime();
+
   let equityPeriodAgo = Number(equityRow?.equity_period_ago ?? 0);
-  if (timeRange === 'ALL' || equityPeriodAgo <= 0) {
+  let cashFlowPeriod = Number(cashFlowPeriodRaw ?? 0);
+
+  // ALL, or any window longer than available history (30D/90D today): baseline =
+  // first equity prints; cash flows only after those prints (not seed capital).
+  if (timeRange === 'ALL' || equityPeriodAgo <= 0 || historyStartsInsideWindow) {
     equityPeriodAgo = initialEquity > 0 ? initialEquity : equityNow;
+    if (timeRange !== 'ALL') {
+      cashFlowPeriod = await getCashFlowDeltaAfterFirstEquity(to_ts, venue, strategies);
+    }
   }
 
   const pnlPeriod = equityNow - equityPeriodAgo - cashFlowPeriod;

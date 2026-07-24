@@ -78,15 +78,27 @@ export default function OverviewPage() {
     const firstMeaningful =
       displayEquityCurve.find((p) => Number(p.equity) > 0) ?? displayEquityCurve[0];
     const periodBaseline = Number(stats?.equity_24h_ago);
-    // ALL equity curve is cumulative from 0 (each strategy's first print is a
-    // delta). Baseline must be the first curve point — NOT sum(initial_equity),
-    // which would double-count later strategies' seed capital vs inception CFs.
-    const baselineEquity =
-      timeRange === 'ALL'
-        ? firstMeaningful?.equity ?? 0
-        : periodBaseline > 0
-          ? periodBaseline
-          : firstMeaningful?.equity ?? 0;
+    const inceptionMs = stats?.initial_equity_ts
+      ? new Date(stats.initial_equity_ts).getTime()
+      : NaN;
+    const rangeMs: Record<string, number> = {
+      '24H': 24 * 3600_000,
+      '7D': 7 * 24 * 3600_000,
+      '30D': 30 * 24 * 3600_000,
+      '90D': 90 * 24 * 3600_000,
+    };
+    // Windows longer than live history (30D/90D): curve starts at first print —
+    // same chart baseline as ALL, not a bogus period-start equity.
+    const historyInsideWindow =
+      timeRange === 'ALL' ||
+      (Number.isFinite(inceptionMs) &&
+        rangeMs[timeRange] != null &&
+        inceptionMs > Date.now() - rangeMs[timeRange]);
+    const baselineEquity = historyInsideWindow
+      ? firstMeaningful?.equity ?? 0
+      : periodBaseline > 0
+        ? periodBaseline
+        : firstMeaningful?.equity ?? 0;
 
     return buildPnlCurve({
       equityCurve: displayEquityCurve,
@@ -94,7 +106,7 @@ export default function OverviewPage() {
       baselineEquity,
       baselineTs: firstMeaningful?.ts,
     });
-  }, [displayEquityCurve, stats?.equity_24h_ago, cashFlowEvents, timeRange]);
+  }, [displayEquityCurve, stats?.equity_24h_ago, stats?.initial_equity_ts, cashFlowEvents, timeRange]);
 
   // Data freshness indicator
   const dataFreshness = useMemo(() => {
@@ -222,11 +234,28 @@ export default function OverviewPage() {
               <>
                 Trading PnL only (equity change minus deposits/withdrawals). Baseline:{' '}
                 {formatUsd(
-                  timeRange === 'ALL'
-                    ? displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null
-                    : Number(stats?.equity_24h_ago) > 0
+                  (() => {
+                    const firstEq =
+                      displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null;
+                    const inceptionMs = stats?.initial_equity_ts
+                      ? new Date(stats.initial_equity_ts).getTime()
+                      : NaN;
+                    const rangeMs: Record<string, number> = {
+                      '24H': 24 * 3600_000,
+                      '7D': 7 * 24 * 3600_000,
+                      '30D': 30 * 24 * 3600_000,
+                      '90D': 90 * 24 * 3600_000,
+                    };
+                    const historyInsideWindow =
+                      timeRange === 'ALL' ||
+                      (Number.isFinite(inceptionMs) &&
+                        rangeMs[timeRange] != null &&
+                        inceptionMs > Date.now() - rangeMs[timeRange]);
+                    if (historyInsideWindow) return firstEq;
+                    return Number(stats?.equity_24h_ago) > 0
                       ? stats?.equity_24h_ago
-                      : displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null
+                      : firstEq;
+                  })()
                 )}
               </>
             )}
