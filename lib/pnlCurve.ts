@@ -15,6 +15,9 @@ export type PnlPoint = { ts: string; pnl: number };
  * If a cash flow is recorded while a strategy is offline, portfolio equity may
  * keep updating (other strategies) before the catch-up jump. Re-timestamp the
  * flow onto the matching equity jump so PnL does not dip then spike by ~deposit.
+ *
+ * Also matches when the catch-up jump is slightly larger than the deposit
+ * (trading PnL mixed into the same snapshot).
  */
 export function alignCashFlowsToEquityCatchUp(
   equityCurve: EquityPoint[],
@@ -24,7 +27,7 @@ export function alignCashFlowsToEquityCatchUp(
   if (!equityCurve.length || !cashFlowEvents.length) return cashFlowEvents;
 
   const maxDelayMs = opts?.maxDelayMs ?? 48 * 60 * 60 * 1000;
-  const relTol = opts?.relTol ?? 0.15;
+  const relTol = opts?.relTol ?? 0.2;
   const jumps: Array<{ ts: string; tsMs: number; amount: number }> = [];
   for (let i = 1; i < equityCurve.length; i += 1) {
     const prev = Number(equityCurve[i - 1].equity);
@@ -43,28 +46,34 @@ export function alignCashFlowsToEquityCatchUp(
   return cashFlowEvents.map((flow) => {
     const amount = Number(flow.amount);
     const flowMs = new Date(flow.ts).getTime();
-    if (!Number.isFinite(amount) || !Number.isFinite(flowMs) || Math.abs(amount) < 50) {
+    // Only realign sizeable transfers. Small fees / funding-like rows can
+    // spuriously match unrelated market moves a day later.
+    if (!Number.isFinite(amount) || !Number.isFinite(flowMs) || Math.abs(amount) < 500) {
       return flow;
     }
 
-    // Already aligned with a near-simultaneous equity jump.
+    const matchesJump = (j: { tsMs: number; amount: number }) => {
+      const scale = Math.max(Math.abs(amount), Math.abs(j.amount), 1);
+      return Math.abs(j.amount - amount) / scale <= relTol;
+    };
+
+    // Already aligned with a near-simultaneous equity jump (±2 min).
     const immediate = jumps.findIndex((j, idx) => {
       if (usedJumps.has(idx)) return false;
       if (Math.abs(j.tsMs - flowMs) > 120_000) return false;
-      const scale = Math.max(Math.abs(amount), Math.abs(j.amount), 1);
-      return Math.abs(j.amount - amount) / scale <= relTol;
+      return matchesJump(j);
     });
     if (immediate >= 0) {
       usedJumps.add(immediate);
       return flow;
     }
 
+    // Offline deposit: equity catch-up comes later.
     const matchIdx = jumps.findIndex((j, idx) => {
       if (usedJumps.has(idx)) return false;
       if (j.tsMs <= flowMs) return false;
       if (j.tsMs - flowMs > maxDelayMs) return false;
-      const scale = Math.max(Math.abs(amount), Math.abs(j.amount), 1);
-      return Math.abs(j.amount - amount) / scale <= relTol;
+      return matchesJump(j);
     });
     if (matchIdx < 0) return flow;
     usedJumps.add(matchIdx);

@@ -933,13 +933,28 @@ function downsampleEquityCurve(points: EquityCurvePoint[], maxPoints: number): E
   if (points.length <= maxPoints) return points;
   if (maxPoints <= 2) return [points[0], points[points.length - 1]];
 
-  const result: EquityCurvePoint[] = [];
+  // Always keep large equity jumps (deposits / withdrawals). Uniform stride
+  // alone can dilute a catch-up jump across buckets and break CF alignment.
+  const keep = new Set<number>([0, points.length - 1]);
+  const JUMP_ABS = 200;
+  for (let i = 1; i < points.length; i += 1) {
+    const prev = Number(points[i - 1].equity);
+    const cur = Number(points[i].equity);
+    if (!Number.isFinite(prev) || !Number.isFinite(cur)) continue;
+    if (Math.abs(cur - prev) >= JUMP_ABS) {
+      keep.add(i - 1);
+      keep.add(i);
+    }
+  }
+
   const step = (points.length - 1) / (maxPoints - 1);
   for (let i = 0; i < maxPoints; i += 1) {
-    const idx = Math.round(i * step);
-    result.push(points[Math.min(idx, points.length - 1)]);
+    keep.add(Math.min(Math.round(i * step), points.length - 1));
   }
-  return result;
+
+  return Array.from(keep)
+    .sort((a, b) => a - b)
+    .map((idx) => points[idx]);
 }
 
 /**

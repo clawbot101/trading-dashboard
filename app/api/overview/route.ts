@@ -14,6 +14,7 @@ import {
   getCashFlowEvents,
   timeRangeToTimestamps,
 } from '../../../lib/queries/overview';
+import { alignCashFlowsToEquityCatchUp } from '../../../lib/pnlCurve';
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,7 +42,7 @@ export async function GET(req: NextRequest) {
       venueSplit,
       recentFills,
       rebalanceStatus,
-      cashFlowEvents,
+      cashFlowEventsRaw,
     ] = await Promise.all([
       getOverviewStats(timeRange, venue, filters),
       getEquityCurve(timeRange, venue, filters),
@@ -52,6 +53,15 @@ export async function GET(req: NextRequest) {
       // Parallel with stats/curve (was sequential and added latency to every load).
       getCashFlowEvents(from_ts, to_ts, venue, filters),
     ]);
+
+    // Align offline deposits onto equity catch-up jumps before the client
+    // charts them. Otherwise PnL dips ~-$deposit until the bot resumes
+    // (classic 30D -$10k spike), and stale browser bundles that skip client
+    // alignment still render the valley.
+    const cashFlowEvents = alignCashFlowsToEquityCatchUp(
+      equityCurve ?? [],
+      cashFlowEventsRaw ?? []
+    );
 
     return NextResponse.json({
       ok: true,

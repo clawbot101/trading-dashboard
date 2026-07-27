@@ -98,4 +98,38 @@ function almostEqual(a: number, b: number, tol = 1e-6) {
   almostEqual(pnlFixed[pnlFixed.length - 1].pnl, 50);
 }
 
+// Case E: prod-shaped 30D — $10k CF on 7/22, equity catch-up next day
+{
+  const equityCurve = [
+    { ts: '2026-07-22T22:00:00.000Z', equity: 2190 },
+    { ts: '2026-07-22T23:13:56.857Z', equity: 7194 },
+    { ts: '2026-07-23T02:36:56.827Z', equity: 7200 },
+    { ts: '2026-07-23T17:23:40.614Z', equity: 17393 },
+    { ts: '2026-07-23T18:01:23.225Z', equity: 22005 },
+  ];
+  const rawFlows = [
+    { ts: '2026-07-22T23:08:56.818Z', amount: 4899.75 },
+    { ts: '2026-07-22T23:10:58.090Z', amount: 10000 },
+    { ts: '2026-07-23T17:55:34.083Z', amount: 4871.89 },
+  ];
+  const aligned = alignCashFlowsToEquityCatchUp(equityCurve, rawFlows);
+  assert.equal(aligned[1].ts, '2026-07-23T17:23:40.614Z', '10k must move onto catch-up jump');
+
+  const pnlNaive = buildPnlCurve({
+    equityCurve,
+    cashFlowEvents: rawFlows,
+    baselineEquity: 2190,
+  });
+  assert.equal(hasOversizedPnlStep(pnlNaive, 1000), true, 'unaligned 10k must valley');
+
+  const pnl = buildPnlCurve({
+    equityCurve,
+    cashFlowEvents: aligned,
+    baselineEquity: 2190,
+  });
+  assert.equal(hasOversizedPnlStep(pnl, 1000), false, 'aligned 30D must not valley -$10k');
+  const minPnl = Math.min(...pnl.map((p) => p.pnl));
+  assert.ok(minPnl > -1000, `min PnL ${minPnl} should not be ~-10k`);
+}
+
 console.log('pnlCurve.test.ts: all checks passed');
