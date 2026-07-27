@@ -17,6 +17,8 @@ export interface OverviewStats {
   pnl_24h: number;
   pnl_24h_pct: number;
   total_unrealized_pnl: number;
+  /** Change in open-position unrealized PnL inside the selected range. */
+  unrealized_pnl_period: number;
   total_realized_pnl: number;
   total_funding: number;
   total_margin: number;
@@ -247,6 +249,11 @@ export async function getOverviewStats(
       ? getCashFlowDeltaAfterFirstEquity(to_ts, venue, strategies)
       : getCashFlowDelta(from_ts, to_ts, venue, strategies);
 
+  const upnlFilters = buildFilters(2, options, true, 'e');
+  const upnlWhere = upnlFilters.clauses.length
+    ? `WHERE ${upnlFilters.clauses.join(' AND ')}`
+    : '';
+
   const [
     equityRow,
     firstRow,
@@ -254,6 +261,7 @@ export async function getOverviewStats(
     fundingDelta,
     cashFlowPeriodRaw,
     stateRealizedRow,
+    upnlRow,
   ] = await Promise.all([
 
     queryOne<any>(
@@ -404,6 +412,37 @@ export async function getOverviewStats(
       `,
       stateParams
     ),
+    // Open-position unrealized PnL at the start of the range, per account.
+    // Needed to split period PnL into realized vs mark-to-market.
+    queryOne<{ upnl_start: number }>(
+      `
+        WITH scoped AS (
+          SELECT e.account_id, e.ts, COALESCE(e.unrealized_pnl, 0) AS upnl
+          FROM equity_snapshots e
+          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          ${upnlWhere}
+        ),
+        accounts AS (
+          SELECT DISTINCT account_id FROM scoped
+        ),
+        at_start AS (
+          SELECT DISTINCT ON (account_id) account_id, upnl
+          FROM scoped
+          WHERE ts <= $1
+          ORDER BY account_id, ts DESC
+        ),
+        first_seen AS (
+          SELECT DISTINCT ON (account_id) account_id, upnl
+          FROM scoped
+          ORDER BY account_id, ts ASC
+        )
+        SELECT COALESCE(SUM(COALESCE(s.upnl, f.upnl, 0)), 0) AS upnl_start
+        FROM accounts a
+        LEFT JOIN at_start s ON s.account_id = a.account_id
+        LEFT JOIN first_seen f ON f.account_id = a.account_id
+      `,
+      [from_ts, ...upnlFilters.params]
+    ),
   ]);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
@@ -453,18 +492,20 @@ export async function getOverviewStats(
   const pnlPeriod = equityNow - equityPeriodAgo - cashFlowPeriod;
   const pnlPeriodPct = equityPeriodAgo !== 0 ? (pnlPeriod / equityPeriodAgo) * 100 : 0;
 
-  const realizedPnl =
-    Math.abs(stateRealized) > 1e-9
-      ? stateRealized
-      : Math.abs(Number(adjustedPnl.realized_pnl ?? 0)) > 1e-9
-        ? Number(adjustedPnl.realized_pnl ?? 0)
-        : 0;
+  // Split period PnL so the cards reconcile with the selected range:
+  //   period PnL = realized in period + change in unrealized during period.
+  // trading_state.realized_pnl is a live per-symbol counter that resets with
+  // positions, so it cannot answer "realized in the last 24H".
+  const unrealizedAtStart = Number(upnlRow?.upnl_start ?? 0);
+  const unrealizedPeriod = unrealizedPnl - unrealizedAtStart;
+  const realizedPnl = pnlPeriod - unrealizedPeriod;
 
   return {
     total_equity: equityNow,
     pnl_24h: pnlPeriod,
     pnl_24h_pct: pnlPeriodPct,
     total_unrealized_pnl: unrealizedPnl,
+    unrealized_pnl_period: unrealizedPeriod,
     total_realized_pnl: realizedPnl,
     total_funding: fundingDelta,
     total_margin: Number(stateRow?.total_margin ?? 0),

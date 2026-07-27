@@ -26,6 +26,7 @@ export default function OverviewPage() {
   const [activityPage, setActivityPage] = useState(1);
   const [selectedStrategy, setSelectedStrategy] = useState<string>('all');
   const periodLabel = timeRange === 'ALL' ? 'Since Start' : `Since ${timeRange}`;
+  const rangeLabel = timeRange === 'ALL' ? 'All' : timeRange;
 
   const { data, error, isLoading } = useSWR(
     `/api/overview?range=${timeRange.toLowerCase()}&strategy=${encodeURIComponent(selectedStrategy)}`,
@@ -174,11 +175,16 @@ export default function OverviewPage() {
         <div className="grid grid-cols-5 gap-3 mb-6">
           <StatCard label="Total Equity" value={formatUsd(stats.total_equity)} />
           <StatCard
-            label="Unrealized PnL"
+            label="Unrealized PnL (now)"
             value={formatPnl(stats.total_unrealized_pnl)}
+            subValue={`${formatPnl(stats.unrealized_pnl_period)} ${rangeLabel}`}
             pnl
           />
-          <StatCard label="Realized PnL" value={formatPnl(stats.total_realized_pnl)} pnl />
+          <StatCard
+            label={`Realized PnL (${rangeLabel})`}
+            value={formatPnl(stats.total_realized_pnl)}
+            pnl
+          />
           <StatCard label="Max Drawdown" value={formatPct(-stats.max_drawdown_pct)} negative />
           <StatCard
             label="Open Positions"
