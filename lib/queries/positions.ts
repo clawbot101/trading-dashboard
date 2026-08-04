@@ -100,19 +100,50 @@ export async function getPositionSummary(
   venue?: string,
   strategy?: string
 ): Promise<PositionSummary | null> {
+  // Gross leverage = gross notional / wallet equity (latest equity per account).
+  // Do NOT average the leverage *settings* (10x/25x) — that produced ~11x junk.
   const sql = `
+    WITH open_pos AS (
+      SELECT
+        account_id,
+        position_qty,
+        COALESCE(
+          position_notional_usd,
+          ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))
+        ) AS notional,
+        unrealized_pnl,
+        COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) AS fees,
+        COALESCE(funding_accrued, 0) AS funding_accrued,
+        margin
+      FROM trading_state
+      WHERE position_qty != 0
+    ),
+    latest_equity AS (
+      SELECT DISTINCT ON (account_id)
+        account_id,
+        equity::float8 AS equity
+      FROM equity_snapshots
+      WHERE account_id IN (SELECT DISTINCT account_id FROM open_pos)
+      ORDER BY account_id, ts DESC
+    )
     SELECT
-      SUM(CASE WHEN position_qty > 0 THEN COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) ELSE 0 END) as total_notional_long,
-      SUM(CASE WHEN position_qty < 0 THEN COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) ELSE 0 END) as total_notional_short,
-      SUM(position_qty * COALESCE(mark_price, avg_entry_price, 0)) as net_exposure,
-      AVG(CASE WHEN position_qty != 0 AND leverage IS NOT NULL THEN ABS(leverage) ELSE NULL END) as gross_leverage,
-      SUM(unrealized_pnl) as total_unrealized_pnl,
-      SUM(unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0)) as total_adjusted_pnl,
-      SUM(funding_accrued) as total_funding,
-      SUM(margin) as total_margin,
-      SUM(COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) as total_fees
-    FROM trading_state
-    WHERE position_qty != 0
+      COALESCE(SUM(CASE WHEN position_qty > 0 THEN notional ELSE 0 END), 0) AS total_notional_long,
+      COALESCE(SUM(CASE WHEN position_qty < 0 THEN notional ELSE 0 END), 0) AS total_notional_short,
+      COALESCE(SUM(SIGN(position_qty) * notional), 0) AS net_exposure,
+      CASE
+        WHEN COALESCE((SELECT SUM(equity) FROM latest_equity), 0) > 0
+        THEN (
+          COALESCE(SUM(ABS(notional)), 0)
+          / (SELECT SUM(equity) FROM latest_equity)
+        )
+        ELSE NULL
+      END AS gross_leverage,
+      COALESCE(SUM(unrealized_pnl), 0) AS total_unrealized_pnl,
+      COALESCE(SUM(unrealized_pnl - fees + funding_accrued), 0) AS total_adjusted_pnl,
+      COALESCE(SUM(funding_accrued), 0) AS total_funding,
+      COALESCE(SUM(margin), 0) AS total_margin,
+      COALESCE(SUM(fees), 0) AS total_fees
+    FROM open_pos
   `;
 
   return queryOne<PositionSummary>(sql);
