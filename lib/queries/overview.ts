@@ -1960,32 +1960,47 @@ async function getFundingDeltasByDay(
   venue?: string,
   strategies?: string[]
 ): Promise<Array<{ date: string; daily_funding_delta: number }>> {
+  // Same source as getFundingDelta: snapshot funding_accrued, not polluted funding_payments.
   const options: QueryFilters = { venue, strategies };
-  const filters = buildFilters(3, options, true, 'f');
-  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+  const filters = buildFilters(3, options, true, 'e');
+  const whereExtra = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
   return query<{ date: string; daily_funding_delta: number }>(
     `
-      WITH funding_with_lag AS (
+      WITH scoped AS (
         SELECT
-          f.ts,
-          COALESCE(f.payment_amount, 0) AS payment_amount,
-          LAG(COALESCE(f.payment_amount, 0)) OVER (
-            PARTITION BY f.session_id, f.venue, f.symbol
-            ORDER BY f.ts
-          ) AS prev_payment
-        FROM funding_payments f
-        LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
-        WHERE f.ts <= $1
-        ${whereSql}
+          e.account_id,
+          e.ts,
+          COALESCE(e.funding_accrued, 0) AS funding_accrued
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        WHERE e.ts <= $1
+        ${whereExtra}
+      ),
+      day_end AS (
+        SELECT DISTINCT ON (account_id, (ts AT TIME ZONE 'UTC')::date)
+          account_id,
+          (ts AT TIME ZONE 'UTC')::date AS day,
+          funding_accrued
+        FROM scoped
+        WHERE ts >= $2
+        ORDER BY account_id, (ts AT TIME ZONE 'UTC')::date, ts DESC
+      ),
+      with_prev AS (
+        SELECT
+          day,
+          funding_accrued
+            - LAG(funding_accrued) OVER (PARTITION BY account_id ORDER BY day)
+            AS daily_delta
+        FROM day_end
       )
       SELECT
-        DATE(ts) AS date,
-        SUM(COALESCE(payment_amount, 0) - COALESCE(prev_payment, 0)) AS daily_funding_delta
-      FROM funding_with_lag
-      WHERE ts >= $2
-      GROUP BY DATE(ts)
-      ORDER BY DATE(ts) ASC
+        day::text AS date,
+        COALESCE(SUM(daily_delta), 0) AS daily_funding_delta
+      FROM with_prev
+      WHERE daily_delta IS NOT NULL
+      GROUP BY day
+      ORDER BY day ASC
     `,
     [toTs, fromTs, ...filters.params]
   );
