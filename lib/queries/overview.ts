@@ -1560,39 +1560,49 @@ async function getFundingDelta(
   venue?: string,
   strategies?: string[]
 ): Promise<number> {
+  // Use equity_snapshots.funding_accrued (cumulative) end-start per account.
+  // funding_payments historically stored the same cumulative every minute, so
+  // summing LAG(payment_amount) over-counted (e.g. alpha ALL showed ~-$22 vs
+  // true ~-$1–6). Snapshot accrued deltas stay well-defined.
   const options: QueryFilters = { venue, strategies };
-  const filters = buildFilters(3, options, true, 'f');
-  const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
+  const filters = buildFilters(3, options, true, 'e');
+  const whereExtra = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
   const row = await queryOne<{ funding_delta: number }>(
     `
-      WITH funding_with_lag AS (
+      WITH scoped AS (
         SELECT
-          f.ts,
-          f.session_id,
-          f.venue,
-          f.symbol,
-          COALESCE(f.payment_amount, 0) AS payment_amount,
-          LAG(COALESCE(f.payment_amount, 0)) OVER (
-            PARTITION BY f.session_id, f.venue, f.symbol
-            ORDER BY f.ts
-          ) AS prev_payment
-        FROM funding_payments f
-        LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
-        WHERE f.ts <= $1
-        ${whereSql}
+          e.account_id,
+          e.ts,
+          COALESCE(e.funding_accrued, 0) AS funding_accrued
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        WHERE e.ts <= $1
+        ${whereExtra}
+      ),
+      at_end AS (
+        SELECT DISTINCT ON (account_id) account_id, funding_accrued
+        FROM scoped
+        ORDER BY account_id, ts DESC
+      ),
+      at_start AS (
+        SELECT DISTINCT ON (account_id) account_id, funding_accrued
+        FROM scoped
+        WHERE ts <= $2
+        ORDER BY account_id, ts DESC
+      ),
+      first_seen AS (
+        SELECT DISTINCT ON (account_id) account_id, funding_accrued
+        FROM scoped
+        ORDER BY account_id, ts ASC
       )
-      SELECT
-        COALESCE(
-          SUM(
-            CASE
-              WHEN ts < $2 THEN 0
-              ELSE COALESCE(payment_amount, 0) - COALESCE(prev_payment, 0)
-            END
-          ),
-          0
-        ) AS funding_delta
-      FROM funding_with_lag
+      SELECT COALESCE(SUM(
+        COALESCE(e.funding_accrued, 0)
+        - COALESCE(s.funding_accrued, f.funding_accrued, 0)
+      ), 0) AS funding_delta
+      FROM at_end e
+      LEFT JOIN at_start s ON s.account_id = e.account_id
+      LEFT JOIN first_seen f ON f.account_id = e.account_id
     `,
     [toTs, fromTs, ...filters.params]
   );
