@@ -260,9 +260,9 @@ export default function OverviewPage() {
       </div>
 
       {/* Main content: equity chart + right column */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        {/* Equity/PnL chart (2/3) */}
-        <div className="col-span-2 panel p-4">
+      <div className="mb-6 grid grid-cols-[minmax(0,1fr)_220px] gap-4">
+        {/* Equity/PnL chart */}
+        <div className="panel p-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <button
