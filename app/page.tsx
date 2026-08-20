@@ -177,129 +177,6 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {/* Top row: stat cards */}
-      {!isLoading && stats && (
-        <div className="grid grid-cols-5 gap-3 mb-6">
-          <StatCard
-            label="Contributed Capital"
-            value={formatUsd(stats.contributed_capital)}
-            subValue="Net deposits since inception"
-          />
-          <StatCard label="Current Equity" value={formatUsd(stats.total_equity)} />
-          <StatCard
-            label="Total PnL (Inception)"
-            value={formatPnl(stats.inception_pnl)}
-            pnl
-          />
-          <StatCard
-            label="Realized PnL (Inception)"
-            value={formatPnl(stats.inception_realized_pnl)}
-            pnl
-          />
-          <StatCard
-            label="Unrealized PnL (Now)"
-            value={formatPnl(stats.total_unrealized_pnl)}
-            subValue={`${stats.open_positions} open · ${formatUsd(stats.gross_exposure)} notional`}
-            pnl
-          />
-        </div>
-      )}
-
-      {/* Main content: equity chart + right column */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        {/* Equity/PnL chart (2/3) */}
-        <div className="col-span-2 panel p-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setChartView('equity')}
-                className={`px-2 py-0.5 text-xs rounded ${
-                  chartView === 'equity'
-                    ? 'bg-hl-accent text-hl-bg'
-                    : 'bg-hl-hover text-hl-secondary'
-                }`}
-              >
-                Equity
-              </button>
-              <button
-                onClick={() => setChartView('pnl')}
-                className={`px-2 py-0.5 text-xs rounded ${
-                  chartView === 'pnl'
-                    ? 'bg-hl-accent text-hl-bg'
-                    : 'bg-hl-hover text-hl-secondary'
-                }`}
-              >
-                PnL ({periodLabel})
-              </button>
-            </div>
-            <div className="text-xs text-hl-muted">
-              Updated {dataFreshness.text}
-            </div>
-          </div>
-          {chartView === 'equity' ? (
-            <EquityChart data={displayEquityCurve} height={256} />
-          ) : (
-            <PnlChart data={pnlCurve} height={256} />
-          )}
-          <div className="mt-2 text-xs text-hl-muted">
-            {chartView === 'equity' ? (
-              <>
-                Account equity (wallet balance). Deposits raise this line; they are not
-                trading profit.
-              </>
-            ) : (
-              <>
-                Trading PnL only (equity change minus deposits/withdrawals). Baseline:{' '}
-                {formatUsd(
-                  (() => {
-                    const firstEq =
-                      displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null;
-                    const inceptionMs = stats?.initial_equity_ts
-                      ? new Date(stats.initial_equity_ts).getTime()
-                      : NaN;
-                    const rangeMs: Record<string, number> = {
-                      '24H': 24 * 3600_000,
-                      '7D': 7 * 24 * 3600_000,
-                      '30D': 30 * 24 * 3600_000,
-                      '90D': 90 * 24 * 3600_000,
-                    };
-                    const historyInsideWindow =
-                      timeRange === 'ALL' ||
-                      (Number.isFinite(inceptionMs) &&
-                        rangeMs[timeRange] != null &&
-                        inceptionMs > Date.now() - rangeMs[timeRange]);
-                    if (historyInsideWindow) return firstEq;
-                    return Number(stats?.equity_24h_ago) > 0
-                      ? stats?.equity_24h_ago
-                      : firstEq;
-                  })()
-                )}
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Right column (1/3) */}
-        <div className="space-y-4">
-          {/* Venue split */}
-          <div className="panel p-4">
-            <div className="text-xs text-hl-secondary mb-2">Venue Split</div>
-            {venueSplit.length > 0 ? (
-              <div className="space-y-2">
-                {venueSplit.map((v: any) => (
-                  <div key={v.venue} className="flex items-center justify-between">
-                    <span className="text-sm">{v.venue}</span>
-                    <span className="font-num text-sm">{formatUsd(v.equity)}</span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-hl-muted text-sm py-4">No venue data</div>
-            )}
-          </div>
-        </div>
-      </div>
-
       {/* Strategy performance table */}
       <div className="panel p-4 mb-6">
         <div className="flex items-baseline justify-between mb-3">
@@ -380,6 +257,137 @@ export default function OverviewPage() {
         ) : (
           <div className="text-hl-muted text-sm py-4">No strategies</div>
         )}
+      </div>
+
+      {/* Main content: equity chart + right column */}
+      <div className="grid grid-cols-3 gap-4 mb-6">
+        {/* Equity/PnL chart (2/3) */}
+        <div className="col-span-2 panel p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setChartView('equity')}
+                className={`px-2 py-0.5 text-xs rounded ${
+                  chartView === 'equity'
+                    ? 'bg-hl-accent text-hl-bg'
+                    : 'bg-hl-hover text-hl-secondary'
+                }`}
+              >
+                Equity
+              </button>
+              <button
+                onClick={() => setChartView('pnl')}
+                className={`px-2 py-0.5 text-xs rounded ${
+                  chartView === 'pnl'
+                    ? 'bg-hl-accent text-hl-bg'
+                    : 'bg-hl-hover text-hl-secondary'
+                }`}
+              >
+                PnL ({periodLabel})
+              </button>
+            </div>
+            <div className="text-xs text-hl-muted">
+              Updated {dataFreshness.text}
+            </div>
+          </div>
+          {chartView === 'equity' ? (
+            <EquityChart data={displayEquityCurve} height={256} />
+          ) : (
+            <PnlChart data={pnlCurve} height={256} />
+          )}
+          <div className="mt-2 text-xs text-hl-muted">
+            {chartView === 'equity' ? (
+              <>
+                Account equity (wallet balance). Deposits raise this line; they are not
+                trading profit.
+              </>
+            ) : (
+              <>
+                Trading PnL only (equity change minus deposits/withdrawals). Baseline:{' '}
+                {formatUsd(
+                  (() => {
+                    const firstEq =
+                      displayEquityCurve.find((p) => Number(p.equity) > 0)?.equity ?? null;
+                    const inceptionMs = stats?.initial_equity_ts
+                      ? new Date(stats.initial_equity_ts).getTime()
+                      : NaN;
+                    const rangeMs: Record<string, number> = {
+                      '24H': 24 * 3600_000,
+                      '7D': 7 * 24 * 3600_000,
+                      '30D': 30 * 24 * 3600_000,
+                      '90D': 90 * 24 * 3600_000,
+                    };
+                    const historyInsideWindow =
+                      timeRange === 'ALL' ||
+                      (Number.isFinite(inceptionMs) &&
+                        rangeMs[timeRange] != null &&
+                        inceptionMs > Date.now() - rangeMs[timeRange]);
+                    if (historyInsideWindow) return firstEq;
+                    return Number(stats?.equity_24h_ago) > 0
+                      ? stats?.equity_24h_ago
+                      : firstEq;
+                  })()
+                )}
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Right column (1/3) */}
+        <div className="space-y-4">
+          {/* Portfolio totals */}
+          {stats && (
+            <div className="grid grid-cols-1 gap-2">
+              <StatCard
+                label="Contributed Capital"
+                value={formatUsd(stats.contributed_capital)}
+                subValue="Net deposits since inception"
+                compact
+              />
+              <StatCard
+                label="Current Equity"
+                value={formatUsd(stats.total_equity)}
+                compact
+              />
+              <StatCard
+                label="Total PnL (Inception)"
+                value={formatPnl(stats.inception_pnl)}
+                pnl
+                compact
+              />
+              <StatCard
+                label="Realized PnL (Inception)"
+                value={formatPnl(stats.inception_realized_pnl)}
+                pnl
+                compact
+              />
+              <StatCard
+                label="Unrealized PnL (Now)"
+                value={formatPnl(stats.total_unrealized_pnl)}
+                subValue={`${stats.open_positions} open · ${formatUsd(stats.gross_exposure)} notional`}
+                pnl
+                compact
+              />
+            </div>
+          )}
+
+          {/* Venue split */}
+          <div className="panel p-4">
+            <div className="text-xs text-hl-secondary mb-2">Venue Split</div>
+            {venueSplit.length > 0 ? (
+              <div className="space-y-2">
+                {venueSplit.map((v: any) => (
+                  <div key={v.venue} className="flex items-center justify-between">
+                    <span className="text-sm">{v.venue}</span>
+                    <span className="font-num text-sm">{formatUsd(v.equity)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-hl-muted text-sm py-4">No venue data</div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Bottom row: recent fills */}
@@ -499,6 +507,7 @@ function StatCard({
   subValue,
   pnl,
   negative,
+  compact,
 }: {
   label: string;
   value: string;
@@ -506,6 +515,9 @@ function StatCard({
   subValue?: string;
   pnl?: boolean;
   negative?: boolean;
+  /** Side-column variant: label and value share a row so five of these fit
+   *  alongside the chart instead of stacking into a very tall column. */
+  compact?: boolean;
 }) {
   const valueClass = pnl
     ? value.includes('+') || (!value.includes('-') && value !== '$0.00')
@@ -516,6 +528,19 @@ function StatCard({
     : negative
     ? 'text-hl-loss'
     : '';
+
+  if (compact) {
+    return (
+      <div className="panel px-3 py-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-[10px] uppercase tracking-wide text-hl-muted">{label}</div>
+          <div className={`font-num text-sm ${valueClass}`}>{value}</div>
+        </div>
+        {subValue && <div className="text-[10px] text-hl-muted">{subValue}</div>}
+        {delta && !subValue && <div className="text-[10px] text-hl-muted">{delta}</div>}
+      </div>
+    );
+  }
 
   return (
     <div className="stat-card">
