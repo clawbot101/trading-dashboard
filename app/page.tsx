@@ -80,6 +80,24 @@ export default function OverviewPage() {
 
   const displayEquityCurve = useMemo(() => normalizeEquityCurve(equityCurve), [equityCurve]);
 
+  // Summed from the leaderboard rather than read from `stats`, because `stats`
+  // is scoped to the selected strategy and would stop being a portfolio total
+  // as soon as one is picked.
+  const portfolioTotals = useMemo(() => {
+    const sum = (key: string) =>
+      strategies.reduce((acc: number, s: any) => acc + (Number(s[key]) || 0), 0);
+    const contributed = sum('contributed_capital');
+    const pnl = sum('inception_pnl');
+    return {
+      contributed,
+      equity: sum('latest_equity'),
+      realized: sum('inception_realized_pnl'),
+      unrealized: sum('unrealized_pnl'),
+      pnl,
+      returnPct: contributed > 0 ? (pnl / contributed) * 100 : 0,
+    };
+  }, [strategies]);
+
   // Compute PnL curve from equity curve (deposits excluded via cashFlowEvents)
   const pnlCurve = useMemo(() => {
     if (!displayEquityCurve.length) return [];
@@ -181,17 +199,9 @@ export default function OverviewPage() {
       <div className="panel p-4 mb-6">
         <div className="flex items-baseline justify-between mb-3">
           <div className="text-xs text-hl-secondary">Strategy Performance</div>
-          <button
-            type="button"
-            onClick={() => setSelectedStrategy('all')}
-            className={`px-2 py-0.5 text-[10px] rounded transition ${
-              selectedStrategy === 'all'
-                ? 'bg-hl-accent/20 ring-1 ring-hl-accent text-hl-text'
-                : 'bg-hl-hover text-hl-secondary hover:bg-hl-panel'
-            }`}
-          >
-            All Strategies · Portfolio View
-          </button>
+          <div className="text-[10px] text-hl-muted">
+            Click a row to filter · click again to clear
+          </div>
         </div>
         {strategies.length > 0 ? (
           <table className="w-full table-fixed text-sm">
@@ -204,6 +214,52 @@ export default function OverviewPage() {
               </tr>
             </thead>
             <tbody>
+              {/* Portfolio total. Shown as a row rather than a toggle so the
+                  combined result is readable without discovering a control. */}
+              <tr
+                onClick={() => setSelectedStrategy('all')}
+                className={`cursor-pointer border-b-2 border-hl-border transition ${
+                  selectedStrategy === 'all' ? 'bg-hl-accent/10' : 'hover:bg-hl-hover'
+                }`}
+              >
+                <td className="w-36 py-3 pr-3 leading-tight">
+                  <div className="text-sm font-semibold">All Strategies</div>
+                  <div className="text-[10px] uppercase tracking-wide text-hl-muted">
+                    Portfolio
+                  </div>
+                </td>
+                <td className="py-3 text-right font-num text-hl-secondary">
+                  {formatUsd(portfolioTotals.contributed)} →{' '}
+                  {formatUsd(portfolioTotals.equity)}
+                </td>
+                <td className="py-3 text-right font-num">
+                  <span
+                    className={
+                      portfolioTotals.realized >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                    }
+                  >
+                    {formatPnl(portfolioTotals.realized)}
+                  </span>
+                  <span className="text-hl-muted"> / </span>
+                  <span
+                    className={
+                      portfolioTotals.unrealized >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                    }
+                  >
+                    {formatPnl(portfolioTotals.unrealized)}
+                  </span>
+                </td>
+                <td
+                  className={`py-3 text-right font-num ${
+                    portfolioTotals.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                  }`}
+                >
+                  <span className="text-lg font-semibold">
+                    {formatPnl(portfolioTotals.pnl)}
+                  </span>{' '}
+                  <span className="text-xs">({formatPct(portfolioTotals.returnPct)})</span>
+                </td>
+              </tr>
               {strategies.slice(0, 5).map((s: any) => (
                 <tr
                   key={s.strategy_name}
@@ -260,9 +316,9 @@ export default function OverviewPage() {
       </div>
 
       {/* Main content: equity chart + right column */}
-      <div className="mb-6 grid grid-cols-[minmax(0,1fr)_220px] gap-4">
-        {/* Equity/PnL chart */}
-        <div className="panel p-4">
+      <div className="mb-6 grid grid-cols-3 gap-4">
+        {/* Equity/PnL chart (2/3) */}
+        <div className="col-span-2 panel p-4">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
               <button
