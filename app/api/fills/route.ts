@@ -5,9 +5,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { getFills, getFillCount, getFillTotals, timeRangeToTimestamps } from '../../../lib/queries/trades';
+import { cached } from '../../../lib/cache';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+const CACHE_TTL_MS = 30_000;
 
 const FillsParamsSchema = z.object({
   timeRange: z.enum(['24H', '7D', '30D', '90D', 'ALL']).default('ALL'),
@@ -27,16 +31,28 @@ export async function GET(req: NextRequest) {
     const venue = q.venue === 'all' ? undefined : q.venue;
     const strategy = q.strategy === 'all' ? undefined : q.strategy;
 
-    const fills = await getFills(from_ts, to_ts, venue, strategy, q.symbol, q.page, q.pageSize);
-    const totalRows = await getFillCount(from_ts, to_ts, venue, strategy, q.symbol);
-    const totals = await getFillTotals(from_ts, to_ts, venue, strategy, q.symbol);
+    const cacheKey = `fills:${q.timeRange}:${venue ?? 'all'}:${strategy ?? 'all'}:${q.symbol ?? 'all'}:${q.page}:${q.pageSize}`;
+    const [fills, totalRows, totals] = await cached(cacheKey, CACHE_TTL_MS, () =>
+      Promise.all([
+        getFills(from_ts, to_ts, venue, strategy, q.symbol, q.page, q.pageSize),
+        getFillCount(from_ts, to_ts, venue, strategy, q.symbol),
+        getFillTotals(from_ts, to_ts, venue, strategy, q.symbol),
+      ])
+    );
 
-    return NextResponse.json({
-      ok: true,
-      query: q,
-      data: { fills, totals, totalRows },
-      as_of_ts: new Date().toISOString(),
-    });
+    return NextResponse.json(
+      {
+        ok: true,
+        query: q,
+        data: { fills, totals, totalRows },
+        as_of_ts: new Date().toISOString(),
+      },
+      {
+        headers: {
+          'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=300',
+        },
+      }
+    );
   } catch (err: any) {
     console.error('[api/fills] error', {
       message: err?.message,

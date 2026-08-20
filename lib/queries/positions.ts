@@ -118,13 +118,22 @@ export async function getPositionSummary(
       FROM trading_state
       WHERE position_qty != 0
     ),
+    open_accounts AS (
+      SELECT DISTINCT account_id FROM open_pos
+    ),
+    -- One index seek per open account instead of DISTINCT ON over the whole
+    -- equity_snapshots history: Postgres has no loose index scan, so the old form
+    -- read all ~87k index rows just to pick the latest per account.
     latest_equity AS (
-      SELECT DISTINCT ON (account_id)
-        account_id,
-        equity::float8 AS equity
-      FROM equity_snapshots
-      WHERE account_id IN (SELECT DISTINCT account_id FROM open_pos)
-      ORDER BY account_id, ts DESC
+      SELECT oa.account_id, le.equity
+      FROM open_accounts oa
+      CROSS JOIN LATERAL (
+        SELECT e.equity::float8 AS equity
+        FROM equity_snapshots e
+        WHERE e.account_id = oa.account_id
+        ORDER BY e.ts DESC
+        LIMIT 1
+      ) le
     )
     SELECT
       COALESCE(SUM(CASE WHEN position_qty > 0 THEN notional ELSE 0 END), 0) AS total_notional_long,

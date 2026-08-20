@@ -281,86 +281,6 @@ export default function OverviewPage() {
 
         {/* Right column (1/3) */}
         <div className="space-y-4">
-          {/* Strategy leaderboard */}
-          <div className="panel p-4">
-            <div className="flex items-baseline justify-between mb-2">
-              <div className="text-xs text-hl-secondary">Strategy Performance</div>
-              <div className="text-[10px] text-hl-muted">Since inception</div>
-            </div>
-            <div className="space-y-1">
-              <button
-                type="button"
-                onClick={() => setSelectedStrategy('all')}
-                className={`w-full flex items-center justify-between p-2 rounded text-left transition ${
-                  selectedStrategy === 'all'
-                    ? 'bg-hl-accent/20 ring-1 ring-hl-accent'
-                    : 'bg-hl-hover hover:bg-hl-panel'
-                }`}
-              >
-                <span className="text-sm font-medium">All Strategies</span>
-                <span className="text-xs text-hl-secondary">Portfolio View</span>
-              </button>
-              {strategies.length > 0 ? (
-                strategies.slice(0, 5).map((s: any) => (
-                  <button
-                    type="button"
-                    key={s.strategy_name}
-                    onClick={() =>
-                      setSelectedStrategy((prev) => (prev === s.strategy_name ? 'all' : s.strategy_name))
-                    }
-                    className={`w-full flex items-center justify-between p-2 rounded text-left transition ${
-                      selectedStrategy === s.strategy_name
-                        ? 'bg-hl-accent/20 ring-1 ring-hl-accent'
-                        : 'bg-hl-hover hover:bg-hl-panel'
-                    }`}
-                  >
-                    <span className="text-sm font-medium">{s.strategy_name}</span>
-                    <div className="text-right">
-                      <div
-                        className={`font-num text-base ${
-                          s.inception_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
-                        }`}
-                        title="Total trading PnL since inception"
-                      >
-                        {formatPnl(s.inception_pnl)}
-                      </div>
-                      <div className="font-num text-[10px] text-hl-muted">
-                        Capital {formatUsd(s.contributed_capital)}
-                        {' → '}Equity {formatUsd(s.latest_equity)}
-                      </div>
-                      <div className="font-num text-[10px] text-hl-muted">
-                        Realized{' '}
-                        <span
-                          className={
-                            s.inception_realized_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
-                          }
-                        >
-                          {formatPnl(s.inception_realized_pnl)}
-                        </span>
-                        {' · '}Open{' '}
-                        <span
-                          className={s.unrealized_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'}
-                        >
-                          {formatPnl(s.unrealized_pnl)}
-                        </span>
-                        {' · '}
-                        <span
-                          className={
-                            s.inception_return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'
-                          }
-                        >
-                          {formatPct(s.inception_return_pct)}
-                        </span>
-                      </div>
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="text-hl-muted text-sm py-4">No strategies</div>
-              )}
-            </div>
-          </div>
-
           {/* Venue split */}
           <div className="panel p-4">
             <div className="text-xs text-hl-secondary mb-2">Venue Split</div>
@@ -378,6 +298,88 @@ export default function OverviewPage() {
             )}
           </div>
         </div>
+      </div>
+
+      {/* Strategy performance table */}
+      <div className="panel p-4 mb-6">
+        <div className="flex items-baseline justify-between mb-3">
+          <div className="text-xs text-hl-secondary">Strategy Performance</div>
+          <button
+            type="button"
+            onClick={() => setSelectedStrategy('all')}
+            className={`px-2 py-0.5 text-[10px] rounded transition ${
+              selectedStrategy === 'all'
+                ? 'bg-hl-accent/20 ring-1 ring-hl-accent text-hl-text'
+                : 'bg-hl-hover text-hl-secondary hover:bg-hl-panel'
+            }`}
+          >
+            All Strategies · Portfolio View
+          </button>
+        </div>
+        {strategies.length > 0 ? (
+          <table className="w-full table-fixed text-sm">
+            <thead>
+              <tr className="border-b border-hl-border text-[10px] uppercase tracking-wide text-hl-muted">
+                <th className="w-36 pb-2 text-left font-normal">Strategy</th>
+                <th className="pb-2 text-right font-normal">Capital → Equity</th>
+                <th className="pb-2 text-right font-normal">Realized / Open</th>
+                <th className="pb-2 text-right font-normal">Total PnL (Since Inception)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {strategies.slice(0, 5).map((s: any) => (
+                <tr
+                  key={s.strategy_name}
+                  onClick={() =>
+                    setSelectedStrategy((prev) =>
+                      prev === s.strategy_name ? 'all' : s.strategy_name
+                    )
+                  }
+                  className={`cursor-pointer border-b border-hl-border/40 transition last:border-0 ${
+                    selectedStrategy === s.strategy_name
+                      ? 'bg-hl-accent/10'
+                      : 'hover:bg-hl-hover'
+                  }`}
+                >
+                  <td
+                    className="w-36 py-2.5 pr-3 font-medium leading-tight"
+                    title={s.strategy_name}
+                  >
+                    <span className="line-clamp-2 break-words">
+                      {String(s.strategy_name).replace(/_/g, '_\u200b')}
+                    </span>
+                  </td>
+                  <td className="py-2.5 text-right font-num text-hl-secondary">
+                    {formatUsd(s.contributed_capital)} → {formatUsd(s.latest_equity)}
+                  </td>
+                  <td className="py-2.5 text-right font-num">
+                    <span
+                      className={
+                        s.inception_realized_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                      }
+                    >
+                      {formatPnl(s.inception_realized_pnl)}
+                    </span>
+                    <span className="text-hl-muted"> / </span>
+                    <span className={s.unrealized_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>
+                      {formatPnl(s.unrealized_pnl)}
+                    </span>
+                  </td>
+                  <td
+                    className={`py-2.5 text-right font-num ${
+                      s.inception_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                    }`}
+                  >
+                    <span className="text-base">{formatPnl(s.inception_pnl)}</span>{' '}
+                    <span className="text-xs">({formatPct(s.inception_return_pct)})</span>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="text-hl-muted text-sm py-4">No strategies</div>
+        )}
       </div>
 
       {/* Bottom row: recent fills */}

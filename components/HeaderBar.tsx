@@ -5,7 +5,10 @@ import useSWR from 'swr';
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export default function HeaderBar() {
-  const { data } = useSWR('/api/overview?range=24h', fetcher, {
+  // Only the two numbers below are shown, so ask for just the stats section. This
+  // header renders on every page, and fetching the whole overview meant each poll
+  // recomputed the equity curve, leaderboard and venue split for nothing.
+  const { data } = useSWR('/api/overview?range=24h&parts=stats', fetcher, {
     refreshInterval: 30000, // 30s refresh
     dedupingInterval: 10000,
   });
