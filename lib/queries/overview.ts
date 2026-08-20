@@ -4,9 +4,9 @@
  * PnL rules:
  * - Top-level net PnL is always computed from equity snapshots:
  *   net_pnl(t0, t1) = equity(t1) - equity(t0) - net_cash_flow(t0, t1)
- * - Deposits / transfers / withdrawals (Hyperliquid or otherwise) are cash flows,
- *   not trading PnL. Large equity jumps with no fills in-between are treated as
- *   synthetic cash flows when cash_flows rows are missing.
+ * - Deposits / transfers / withdrawals are read from cash_flows, which is synced
+ *   from the venue ledger. Equity movement is never guessed to be a cash flow:
+ *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
  */
 
@@ -29,6 +29,9 @@ export interface OverviewStats {
   initial_equity: number;
   initial_equity_ts: string | null;
   cash_flow_period: number;
+  inception_pnl: number;
+  inception_realized_pnl: number;
+  contributed_capital: number;
 }
 
 export interface EquityCurvePoint {
@@ -44,6 +47,11 @@ export interface StrategyLeaderboardRow {
   annualized_return_pct: number;
   latest_equity: number;
   notional: number;
+  inception_pnl: number;
+  inception_realized_pnl: number;
+  unrealized_pnl: number;
+  contributed_capital: number;
+  inception_return_pct: number;
 }
 
 export interface VenueSplitRow {
@@ -262,26 +270,23 @@ export async function getOverviewStats(
     cashFlowPeriodRaw,
     stateRealizedRow,
     upnlRow,
+    cashFlowInception,
   ] = await Promise.all([
 
     queryOne<any>(
       `
-        WITH equity_by_key AS (
-          SELECT
-            e.ts,
+        -- Only two points per key are needed (window end and window start), so the
+        -- per-key lookups below read equity_snapshots directly and let the ts index
+        -- seek to them, instead of re-scanning a materialized 90-day CTE each time.
+        WITH keys AS (
+          SELECT DISTINCT
             COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
-            COALESCE(e.venue, 'unknown') AS venue,
-            MAX(e.equity) AS equity
+            COALESCE(e.venue, 'unknown') AS venue
           FROM equity_snapshots e
           LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
           WHERE e.ts > $2::timestamptz - INTERVAL '90 days'
             AND e.ts <= $1
             ${recentWhereExtra}
-          GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
-        ),
-        keys AS (
-          SELECT DISTINCT strategy_name, venue
-          FROM equity_by_key
         ),
         eval_points AS (
           SELECT 'latest'::text AS point, $1::timestamptz AS ref_ts
@@ -302,12 +307,16 @@ export async function getOverviewStats(
           FROM eval_points ep
           CROSS JOIN keys k
           LEFT JOIN LATERAL (
-            SELECT ebk.ts, ebk.equity
-            FROM equity_by_key ebk
-            WHERE ebk.strategy_name = k.strategy_name
-              AND ebk.venue = k.venue
-              AND ebk.ts <= ep.ref_ts
-            ORDER BY ebk.ts DESC
+            SELECT e.ts, MAX(e.equity) AS equity
+            FROM equity_snapshots e
+            LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+            WHERE COALESCE(sess.strategy_name, 'unknown') = k.strategy_name
+              AND COALESCE(e.venue, 'unknown') = k.venue
+              AND e.ts > $2::timestamptz - INTERVAL '90 days'
+              AND e.ts <= ep.ref_ts
+              ${recentWhereExtra}
+            GROUP BY e.ts
+            ORDER BY e.ts DESC
             LIMIT 1
           ) p ON TRUE
           LEFT JOIN LATERAL (
@@ -359,7 +368,8 @@ export async function getOverviewStats(
             e.ts,
             COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
             COALESCE(e.venue, 'unknown') AS venue,
-            e.equity
+            e.equity,
+            COALESCE(e.unrealized_pnl, 0) AS unrealized_pnl
           FROM equity_snapshots e
           LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
           ${firstWhere}
@@ -370,7 +380,8 @@ export async function getOverviewStats(
         )
         SELECT
           MIN(ts) AS initial_equity_ts,
-          COALESCE(SUM(equity), 0) AS initial_equity
+          COALESCE(SUM(equity), 0) AS initial_equity,
+          COALESCE(SUM(unrealized_pnl), 0) AS initial_unrealized_pnl
         FROM first_per_key
       `,
       eqFiltersFirst.params
@@ -443,10 +454,12 @@ export async function getOverviewStats(
       `,
       [from_ts, ...upnlFilters.params]
     ),
+    getCashFlowDeltaAfterFirstEquity(to_ts, venue, strategies),
   ]);
 
   const equityNow = Number(equityRow?.total_equity ?? 0);
   const initialEquity = Number(firstRow?.initial_equity ?? equityNow);
+  const initialUnrealized = Number(firstRow?.initial_unrealized_pnl ?? 0);
   const inceptionTs = firstRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
   const stateUnrealized = Number(stateRow?.total_unrealized_pnl ?? 0);
   const stateRealized = Number(stateRealizedRow?.realized_pnl ?? 0);
@@ -499,6 +512,9 @@ export async function getOverviewStats(
   const unrealizedAtStart = Number(upnlRow?.upnl_start ?? 0);
   const unrealizedPeriod = unrealizedPnl - unrealizedAtStart;
   const realizedPnl = pnlPeriod - unrealizedPeriod;
+  const contributedCapital = initialEquity + Number(cashFlowInception ?? 0);
+  const inceptionPnl = equityNow - contributedCapital;
+  const inceptionRealizedPnl = inceptionPnl - (unrealizedPnl - initialUnrealized);
 
   return {
     total_equity: equityNow,
@@ -516,6 +532,9 @@ export async function getOverviewStats(
     initial_equity: initialEquity,
     initial_equity_ts: inceptionTs,
     cash_flow_period: cashFlowPeriod,
+    inception_pnl: inceptionPnl,
+    inception_realized_pnl: inceptionRealizedPnl,
+    contributed_capital: contributedCapital,
   };
 }
 
@@ -790,6 +809,8 @@ export async function getEquityCurve(
   }
 
   const eqFilters = buildFilters(3, options, true, 'e');
+  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
+  const eqAnd = eqFilters.clauses.length ? `AND ${eqFilters.clauses.join(' AND ')}` : '';
   const includePendingCashFlows = await hasCashFlowsTable();
   // When the bot is down, deposits can be written to cash_flows before the next
   // equity snapshot. Fold those pending flows into the period-start seed so the
@@ -819,20 +840,17 @@ export async function getEquityCurve(
 
   const rows = await query<EquityCurvePoint>(
     `
-      WITH equity_by_key_all AS (
-        SELECT
-          e.ts,
+      -- The seed lookup and the in-range scan read equity_snapshots directly rather
+      -- than a materialized full-history CTE: a CTE has no indexes, so the per-key
+      -- LATERAL used to re-scan every snapshot ever taken. Hitting the base table
+      -- lets both use the ts index, so a 24H window touches only a day of rows.
+      WITH keys AS (
+        SELECT DISTINCT
           COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
-          COALESCE(e.venue, 'unknown') AS venue,
-          MAX(e.equity) AS equity
+          COALESCE(e.venue, 'unknown') AS venue
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-        ${eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : ''}
-        GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
-      ),
-      keys AS (
-        SELECT DISTINCT strategy_name, venue
-        FROM equity_by_key_all
+        ${eqWhere}
       ),
       seed_per_key AS (
         SELECT
@@ -841,20 +859,31 @@ export async function getEquityCurve(
           ${seedEquityExpr} AS equity
         FROM keys k
         LEFT JOIN LATERAL (
-          SELECT ebk.equity, ebk.ts
-          FROM equity_by_key_all ebk
-          WHERE ebk.strategy_name = k.strategy_name
-            AND ebk.venue = k.venue
-            AND ebk.ts <= $2
-          ORDER BY ebk.ts DESC
+          SELECT e.ts, MAX(e.equity) AS equity
+          FROM equity_snapshots e
+          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          WHERE COALESCE(sess.strategy_name, 'unknown') = k.strategy_name
+            AND COALESCE(e.venue, 'unknown') = k.venue
+            AND e.ts <= $2
+            ${eqAnd}
+          GROUP BY e.ts
+          ORDER BY e.ts DESC
           LIMIT 1
         ) last_eq ON TRUE
       ),
       in_range AS (
-        SELECT strategy_name, venue, ts, equity
-        FROM equity_by_key_all
-        WHERE ts > $2
-          AND ts <= $1
+        SELECT
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          COALESCE(e.venue, 'unknown') AS venue,
+          e.ts,
+          MAX(e.equity) AS equity,
+          MAX(COALESCE(e.unrealized_pnl, 0)) AS unrealized_pnl
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        WHERE e.ts > $2
+          AND e.ts <= $1
+          ${eqAnd}
+        GROUP BY 1, 2, 3
       ),
       unioned AS (
         -- Only seed keys that already had equity at period start. A 0 seed for
@@ -1012,69 +1041,86 @@ export async function getStrategyLeaderboard(
 
   const rows = await query<any>(
     `
-      WITH equity_by_key AS (
+      -- This query only ever needs three points per strategy: the newest snapshot
+      -- in range, the strategy's first snapshot ever, and the last snapshot at or
+      -- before the window start. Locating those timestamps with MIN/MAX first, and
+      -- only then summing equity at those timestamps, avoids aggregating the whole
+      -- equity_snapshots history into ~87k groups and sorting it three times.
+      WITH strategy_ts AS (
+        SELECT
+          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+          MAX(e.ts) FILTER (WHERE e.ts <= $1) AS latest_ts,
+          MIN(e.ts) AS first_ts,
+          MAX(e.ts) FILTER (WHERE e.ts <= $2) AS baseline_ts
+        FROM equity_snapshots e
+        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        ${eqWhere}
+        GROUP BY COALESCE(sess.strategy_name, 'unknown')
+      ),
+      -- Flattened (strategy, ts) pairs we actually need. Kept as a plain equi-join
+      -- key so the planner can hash-join it; an IN (...) list containing a NULL
+      -- baseline_ts degrades into a per-row nested loop.
+      target_points AS (
+        SELECT strategy_name, ts
+        FROM (
+          SELECT strategy_name, unnest(ARRAY[latest_ts, first_ts, baseline_ts]) AS ts
+          FROM strategy_ts
+        ) x
+        WHERE ts IS NOT NULL
+      ),
+      equity_by_key AS (
         SELECT
           COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
           COALESCE(e.venue, 'unknown') AS venue,
           e.ts,
-          MAX(e.equity) AS equity
+          MAX(e.equity) AS equity,
+          MAX(COALESCE(e.unrealized_pnl, 0)) AS unrealized_pnl
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        JOIN target_points tp
+          ON tp.strategy_name = COALESCE(sess.strategy_name, 'unknown')
+         AND tp.ts = e.ts
         ${eqWhere}
         GROUP BY COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown'), e.ts
       ),
       strategy_equity AS (
-        SELECT strategy_name, ts, SUM(equity) AS total_equity
+        SELECT
+          strategy_name,
+          ts,
+          SUM(equity) AS total_equity,
+          SUM(unrealized_pnl) AS total_unrealized_pnl
         FROM equity_by_key
         GROUP BY strategy_name, ts
       ),
-      latest AS (
-        SELECT DISTINCT ON (strategy_name)
-          strategy_name,
-          ts AS latest_ts,
-          total_equity AS latest_equity
-        FROM strategy_equity
-        WHERE ts <= $1
-        ORDER BY strategy_name, ts DESC
-      ),
-      first_equity AS (
-        SELECT DISTINCT ON (strategy_name)
-          strategy_name,
-          ts AS first_ts,
-          total_equity AS first_equity
-        FROM strategy_equity
-        ORDER BY strategy_name, ts ASC
-      ),
-      period_baseline AS (
-        SELECT DISTINCT ON (strategy_name)
-          strategy_name,
-          ts AS baseline_ts,
-          total_equity AS baseline_equity
-        FROM strategy_equity
-        WHERE ts <= $2
-        ORDER BY strategy_name, ts DESC
-      ),
-      state_notional AS (
+      state_metrics AS (
         SELECT
           ts.strategy_name,
-          COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) AS notional
+          COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) AS notional,
+          COALESCE(SUM(ts.unrealized_pnl), 0) AS unrealized_pnl
         FROM trading_state ts
-        WHERE ts.position_qty != 0
         GROUP BY ts.strategy_name
       )
       SELECT
-        l.strategy_name,
+        st.strategy_name,
         'running' AS status,
-        COALESCE(p.baseline_ts, f.first_ts) AS first_ts,
-        l.latest_ts,
-        COALESCE(p.baseline_equity, f.first_equity, l.latest_equity) AS first_equity,
-        l.latest_equity,
-        COALESCE(n.notional, 0) AS notional
-      FROM latest l
-      LEFT JOIN first_equity f ON f.strategy_name = l.strategy_name
-      LEFT JOIN period_baseline p ON p.strategy_name = l.strategy_name
-      LEFT JOIN state_notional n ON n.strategy_name = l.strategy_name
-      ORDER BY l.latest_equity DESC
+        COALESCE(st.baseline_ts, st.first_ts) AS first_ts,
+        st.first_ts AS inception_ts,
+        st.latest_ts,
+        COALESCE(p.total_equity, f.total_equity, l.total_equity) AS first_equity,
+        f.total_equity AS initial_equity,
+        COALESCE(f.total_unrealized_pnl, 0) AS initial_unrealized_pnl,
+        l.total_equity AS latest_equity,
+        COALESCE(n.notional, 0) AS notional,
+        COALESCE(n.unrealized_pnl, 0) AS unrealized_pnl
+      FROM strategy_ts st
+      JOIN strategy_equity l
+        ON l.strategy_name = st.strategy_name AND l.ts = st.latest_ts
+      LEFT JOIN strategy_equity f
+        ON f.strategy_name = st.strategy_name AND f.ts = st.first_ts
+      LEFT JOIN strategy_equity p
+        ON p.strategy_name = st.strategy_name AND p.ts = st.baseline_ts
+      LEFT JOIN state_metrics n ON n.strategy_name = st.strategy_name
+      ORDER BY l.total_equity DESC
       LIMIT 10
     `,
     [to_ts, from_ts, ...eqFilters.params]
@@ -1085,9 +1131,25 @@ export async function getStrategyLeaderboard(
       const firstEquity = Number(r.first_equity) || 0;
       const latestEquity = Number(r.latest_equity) || 0;
       const firstTs = r.first_ts ?? '2000-01-01T00:00:00Z';
+      const inceptionTs = r.inception_ts ?? firstTs;
       const latestTs = r.latest_ts ?? to_ts;
       const cashFlow = await getCashFlowDelta(firstTs, latestTs, venue, [r.strategy_name]);
       const pnl = latestEquity - firstEquity - cashFlow;
+      const initialEquity = Number(r.initial_equity) || 0;
+      const inceptionCashFlow = await getCashFlowDelta(
+        inceptionTs,
+        latestTs,
+        venue,
+        [r.strategy_name]
+      );
+      const contributedCapital = initialEquity + inceptionCashFlow;
+      const inceptionPnl = latestEquity - contributedCapital;
+      const unrealizedPnl = Number(r.unrealized_pnl) || 0;
+      const initialUnrealizedPnl = Number(r.initial_unrealized_pnl) || 0;
+      const inceptionRealizedPnl =
+        inceptionPnl - (unrealizedPnl - initialUnrealizedPnl);
+      const inceptionReturnRate =
+        contributedCapital > 0 ? inceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
       // actual return denominator, then annualize the simple return over the
       // exact period for which this strategy has snapshots. Simple annualization
@@ -1107,6 +1169,11 @@ export async function getStrategyLeaderboard(
         annualized_return_pct: Number.isFinite(annualizedRate) ? annualizedRate * 100 : 0,
         latest_equity: latestEquity,
         notional: Number(r.notional) || 0,
+        inception_pnl: inceptionPnl,
+        inception_realized_pnl: inceptionRealizedPnl,
+        unrealized_pnl: unrealizedPnl,
+        contributed_capital: contributedCapital,
+        inception_return_pct: inceptionReturnRate * 100,
       };
     })
   );
@@ -1251,9 +1318,9 @@ export async function getRecentActivityPage(
   `;
   const filterSqlCount = `
     (
-      $2::text = 'all'
-      OR ($2::text = 'fills' AND kind = 'fill')
-      OR ($2::text = 'rebalance' AND kind = 'rebalance')
+      $3::text = 'all'
+      OR ($3::text = 'fills' AND kind = 'fill')
+      OR ($3::text = 'rebalance' AND kind = 'rebalance')
     )
   `;
 
@@ -1283,6 +1350,25 @@ export async function getRecentActivityPage(
           interval '1 day'
         ) AS rebalance_ts
       ),
+      -- Fills that landed inside a UTC 00:00 rebalance window, pre-aggregated per
+      -- (day, strategy). Aggregating first avoids fanning every day out across every
+      -- historical session, which made this query ~7x slower.
+      window_fills AS (
+        SELECT
+          date_trunc('day', f.ts) AS day,
+          sess.strategy_name AS strategy_name,
+          COUNT(*)::int AS fill_count
+        FROM fills f
+        JOIN trading_sessions sess ON f.session_id = sess.session_id
+        WHERE sess.strategy_name IS NOT NULL
+          AND f.ts < date_trunc('day', f.ts) + make_interval(mins => $2::int)
+        GROUP BY 1, 2
+      ),
+      -- Strategies that actually rebalance in the UTC 00:00 window, so intraday
+      -- strategies (e.g. 4h) stay out of the daily 00:00 rebalance list.
+      rebalance_strategies AS (
+        SELECT DISTINCT strategy_name FROM window_fills
+      ),
       rebalance_events AS (
         SELECT
           d.rebalance_ts AS ts,
@@ -1290,14 +1376,15 @@ export async function getRecentActivityPage(
           jsonb_build_object(
             'rebalance_ts', d.rebalance_ts,
             'window_end_ts', d.rebalance_ts + make_interval(mins => $2::int),
-            'fill_count', COUNT(f.*)::int,
-            'same_position', (COUNT(f.*) = 0)
+            'strategy_name', rs.strategy_name,
+            'fill_count', COALESCE(w.fill_count, 0),
+            'same_position', (COALESCE(w.fill_count, 0) = 0)
           ) AS payload
         FROM rebalance_days d
-        LEFT JOIN fills f
-          ON f.ts >= d.rebalance_ts
-         AND f.ts < d.rebalance_ts + make_interval(mins => $2::int)
-        GROUP BY d.rebalance_ts
+        CROSS JOIN rebalance_strategies rs
+        LEFT JOIN window_fills w
+          ON w.day = d.rebalance_ts
+         AND w.strategy_name = rs.strategy_name
       ),
       combined AS (
         SELECT ts, kind, payload FROM fill_events
@@ -1307,7 +1394,7 @@ export async function getRecentActivityPage(
       SELECT ts, kind, payload
       FROM combined
       WHERE ${filterSql}
-      ORDER BY ts DESC
+      ORDER BY ts DESC, (payload->>'strategy_name') ASC NULLS LAST
       LIMIT $4 OFFSET $5
     `,
     [lookbackDays, rebalanceWindowMinutes, tab, safePageSize, offset]
@@ -1326,9 +1413,17 @@ export async function getRecentActivityPage(
           interval '1 day'
         ) AS rebalance_ts
       ),
+      rebalance_strategies AS (
+        SELECT DISTINCT sess.strategy_name AS strategy_name
+        FROM fills f
+        JOIN trading_sessions sess ON f.session_id = sess.session_id
+        WHERE sess.strategy_name IS NOT NULL
+          AND f.ts < date_trunc('day', f.ts) + make_interval(mins => $2::int)
+      ),
       rebalance_events AS (
         SELECT d.rebalance_ts AS ts, 'rebalance'::text AS kind
         FROM rebalance_days d
+        CROSS JOIN rebalance_strategies rs
       ),
       combined AS (
         SELECT ts, kind FROM fill_events
@@ -1339,7 +1434,7 @@ export async function getRecentActivityPage(
       FROM combined
       WHERE ${filterSqlCount}
     `,
-    [lookbackDays, tab]
+    [lookbackDays, rebalanceWindowMinutes, tab]
   );
 
   const total = Number(countRow?.total ?? 0);
@@ -1454,9 +1549,7 @@ export async function getCashFlowEvents(
   const options: QueryFilters = { venue, strategies };
   const realFlows = await getRealCashFlowEvents(fromTs, toTs, options);
   const inceptionFlows = await getStrategyInceptionFlowEvents(fromTs, toTs, options);
-  const jumpFlows = await getDetectedEquityJumpFlowEvents(fromTs, toTs, options);
-  const dedupedJumps = dedupeCashFlowsAgainstKnown(jumpFlows, realFlows);
-  return [...realFlows, ...inceptionFlows, ...dedupedJumps].sort(
+  return [...realFlows, ...inceptionFlows].sort(
     (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
   );
 }
@@ -1628,18 +1721,12 @@ async function getCashFlowDelta(
   strategies?: string[]
 ): Promise<number> {
   const options: QueryFilters = { venue, strategies };
-  const [realDelta, inceptionFlows, jumpFlows, realFlows] = await Promise.all([
+  const [realDelta, inceptionFlows] = await Promise.all([
     getRealCashFlowDelta(fromTs, toTs, options),
     getStrategyInceptionFlowEvents(fromTs, toTs, options),
-    getDetectedEquityJumpFlowEvents(fromTs, toTs, options),
-    getRealCashFlowEvents(fromTs, toTs, options),
   ]);
   const inceptionDelta = inceptionFlows.reduce((acc, f) => acc + Number(f.amount || 0), 0);
-  const jumpDelta = dedupeCashFlowsAgainstKnown(jumpFlows, realFlows).reduce(
-    (acc, f) => acc + Number(f.amount || 0),
-    0
-  );
-  return realDelta + inceptionDelta + jumpDelta;
+  return realDelta + inceptionDelta;
 }
 
 /**

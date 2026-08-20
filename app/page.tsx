@@ -26,32 +26,39 @@ export default function OverviewPage() {
   const [activityPage, setActivityPage] = useState(1);
   const [selectedStrategy, setSelectedStrategy] = useState<string>('all');
   const periodLabel = timeRange === 'ALL' ? 'Since Start' : `Since ${timeRange}`;
-  const rangeLabel = timeRange === 'ALL' ? 'All' : timeRange;
 
+  // Split into the sections that depend on the selected strategy and the ones that
+  // do not. Switching strategy then only refetches the former, instead of redoing
+  // the leaderboard and venue split (~4s of query time) that come back identical.
+  // keepPreviousData holds the last values on screen during a switch, so the page
+  // no longer blanks out and flashes the connection-error banner.
   const { data, error, isLoading } = useSWR(
-    `/api/overview?range=${timeRange.toLowerCase()}&strategy=${encodeURIComponent(selectedStrategy)}`,
+    `/api/overview?range=${timeRange.toLowerCase()}&strategy=${encodeURIComponent(selectedStrategy)}&parts=stats,curve`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 60000, // 60s for analytics
       dedupingInterval: 30000,
+      keepPreviousData: true,
     }
   );
 
-  // Keep a full leaderboard dataset so users can always switch strategies.
-  const { data: leaderboardData } = useSWR(
-    `/api/overview?range=${timeRange.toLowerCase()}&strategy=all`,
+  // Strategy-independent, so the key deliberately omits the selected strategy and
+  // stays warm across switches. Also feeds the strategy picker itself.
+  const { data: sharedData } = useSWR(
+    `/api/overview?range=${timeRange.toLowerCase()}&parts=leaderboard,venue`,
     fetcher,
     {
       refreshInterval: paused ? 0 : 60000,
       dedupingInterval: 30000,
+      keepPreviousData: true,
     }
   );
 
   const stats = data?.data?.stats;
   const equityCurve = data?.data?.equityCurve ?? EMPTY_LIST;
   const cashFlowEvents = data?.data?.cashFlowEvents ?? EMPTY_LIST;
-  const strategies = leaderboardData?.data?.strategyLeaderboard ?? EMPTY_LIST;
-  const venueSplit = data?.data?.venueSplit ?? EMPTY_LIST;
+  const strategies = sharedData?.data?.strategyLeaderboard ?? EMPTY_LIST;
+  const venueSplit = sharedData?.data?.venueSplit ?? EMPTY_LIST;
   const asOf = data?.as_of_ts;
 
   const { data: activityData, isLoading: isActivityLoading } = useSWR(
@@ -173,23 +180,27 @@ export default function OverviewPage() {
       {/* Top row: stat cards */}
       {!isLoading && stats && (
         <div className="grid grid-cols-5 gap-3 mb-6">
-          <StatCard label="Total Equity" value={formatUsd(stats.total_equity)} />
           <StatCard
-            label="Unrealized PnL (now)"
+            label="Contributed Capital"
+            value={formatUsd(stats.contributed_capital)}
+            subValue="Net deposits since inception"
+          />
+          <StatCard label="Current Equity" value={formatUsd(stats.total_equity)} />
+          <StatCard
+            label="Total PnL (Inception)"
+            value={formatPnl(stats.inception_pnl)}
+            pnl
+          />
+          <StatCard
+            label="Realized PnL (Inception)"
+            value={formatPnl(stats.inception_realized_pnl)}
+            pnl
+          />
+          <StatCard
+            label="Unrealized PnL (Now)"
             value={formatPnl(stats.total_unrealized_pnl)}
-            subValue={`${formatPnl(stats.unrealized_pnl_period)} ${rangeLabel}`}
+            subValue={`${stats.open_positions} open · ${formatUsd(stats.gross_exposure)} notional`}
             pnl
-          />
-          <StatCard
-            label={`Realized PnL (${rangeLabel})`}
-            value={formatPnl(stats.total_realized_pnl)}
-            pnl
-          />
-          <StatCard label="Max Drawdown" value={formatPct(-stats.max_drawdown_pct)} negative />
-          <StatCard
-            label="Open Positions"
-            value={`${stats.open_positions}`}
-            subValue={formatUsd(stats.gross_exposure)}
           />
         </div>
       )}
@@ -272,12 +283,9 @@ export default function OverviewPage() {
         <div className="space-y-4">
           {/* Strategy leaderboard */}
           <div className="panel p-4">
-            <div className="text-xs text-hl-secondary mb-2">
-              Strategy Leaderboard ({periodLabel})
-            </div>
-            <div className="flex items-center justify-end gap-3 px-2 mb-1 text-[10px] text-hl-muted">
-              <span>Equity</span>
-              <span>PnL</span>
+            <div className="flex items-baseline justify-between mb-2">
+              <div className="text-xs text-hl-secondary">Strategy Performance</div>
+              <div className="text-[10px] text-hl-muted">Since inception</div>
             </div>
             <div className="space-y-1">
               <button
@@ -308,32 +316,40 @@ export default function OverviewPage() {
                   >
                     <span className="text-sm font-medium">{s.strategy_name}</span>
                     <div className="text-right">
-                      <div className="flex items-center justify-end gap-3">
-                        <span className="font-num text-sm text-hl-secondary" title="Account equity">
-                          {formatUsd(s.latest_equity)}
-                        </span>
-                        <span
-                          className={`font-num text-sm ${
-                            s.pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
-                          }`}
-                          title="Trading PnL for selected range"
-                        >
-                          {formatPnl(s.pnl)}
-                        </span>
+                      <div
+                        className={`font-num text-base ${
+                          s.inception_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                        }`}
+                        title="Total trading PnL since inception"
+                      >
+                        {formatPnl(s.inception_pnl)}
                       </div>
                       <div className="font-num text-[10px] text-hl-muted">
-                        Notional {formatUsd(s.notional)}
-                        {' · '}Actual{' '}
-                        <span className={s.return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>
-                          {formatPct(s.return_pct)}
-                        </span>
-                        {' · '}Ann.{' '}
+                        Capital {formatUsd(s.contributed_capital)}
+                        {' → '}Equity {formatUsd(s.latest_equity)}
+                      </div>
+                      <div className="font-num text-[10px] text-hl-muted">
+                        Realized{' '}
                         <span
                           className={
-                            s.annualized_return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                            s.inception_realized_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
                           }
                         >
-                          {formatPct(s.annualized_return_pct)}
+                          {formatPnl(s.inception_realized_pnl)}
+                        </span>
+                        {' · '}Open{' '}
+                        <span
+                          className={s.unrealized_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'}
+                        >
+                          {formatPnl(s.unrealized_pnl)}
+                        </span>
+                        {' · '}
+                        <span
+                          className={
+                            s.inception_return_pct >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                          }
+                        >
+                          {formatPct(s.inception_return_pct)}
                         </span>
                       </div>
                     </div>
@@ -372,12 +388,13 @@ export default function OverviewPage() {
             recentActivities.map((a: any) =>
               a.kind === 'rebalance' ? (
                 <div
-                  key={`rebalance-${a.ts}-${a?.payload?.fill_count ?? 0}`}
+                  key={`rebalance-${a.ts}-${a?.payload?.strategy_name ?? 'unknown'}-${a?.payload?.fill_count ?? 0}`}
                   className="flex items-center justify-between p-2 bg-hl-hover rounded text-sm border border-hl-border"
                 >
                   <div className="flex items-center gap-2">
                     <span className="text-hl-muted">{formatTimeAgo(a.ts)}</span>
                     <span className="badge-live">Rebalance</span>
+                    <span className="font-medium">{a?.payload?.strategy_name ?? 'unknown'}</span>
                     <span className="font-medium text-hl-secondary">
                       {a?.payload?.same_position
                         ? 'Same position (no open/close at UTC 00:00 window)'
