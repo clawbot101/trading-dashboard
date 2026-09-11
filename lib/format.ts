@@ -72,6 +72,16 @@ export function formatQty(n: number | null | undefined, dp = 4): string {
 /**
  * Format USD value with $ prefix.
  */
+/** Last 4 hex chars of a Hyperliquid wallet, e.g. 0x...8326 → 8326. */
+export function walletTail(accountId: string | null | undefined): string {
+  if (!accountId) return '';
+  const trimmed = String(accountId).trim();
+  if (!trimmed || trimmed === 'unknown_account') return '';
+  const hex = trimmed.replace(/^0x/i, '');
+  if (hex.length < 4) return hex.toUpperCase();
+  return hex.slice(-4).toLowerCase();
+}
+
 export function formatUsd(n: number | null | undefined, dp = 2): string {
   if (n === null || n === undefined || isNaN(n)) return '-';
   const absVal = Math.abs(n);

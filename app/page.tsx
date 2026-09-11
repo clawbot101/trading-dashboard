@@ -5,6 +5,7 @@ import { useState, useMemo, useEffect } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
 import { buildPnlCurve, alignCashFlowsToEquityCatchUp } from '../lib/pnlCurve';
+import { walletTail } from '../lib/format';
 
 const fetcher = async (url: string) => {
   const r = await fetch(url);
@@ -207,7 +208,7 @@ export default function OverviewPage() {
           <table className="w-full table-fixed text-sm">
             <thead>
               <tr className="border-b border-hl-border text-[10px] uppercase tracking-wide text-hl-muted">
-                <th className="w-36 pb-2 text-left font-normal">Strategy</th>
+                <th className="w-44 pb-2 text-left font-normal">Strategy</th>
                 <th className="pb-2 text-right font-normal">Capital → Equity</th>
                 <th className="pb-2 text-right font-normal">Realized / Open</th>
                 <th className="pb-2 text-right font-normal">Total PnL (Since Inception)</th>
@@ -222,7 +223,7 @@ export default function OverviewPage() {
                   selectedStrategy === 'all' ? 'bg-hl-accent/10' : 'hover:bg-hl-hover'
                 }`}
               >
-                <td className="w-36 py-3 pr-3 leading-tight">
+                <td className="w-44 py-3 pr-3 leading-tight">
                   <div className="text-sm font-semibold">All Strategies</div>
                   <div className="text-[10px] uppercase tracking-wide text-hl-muted">
                     Portfolio
@@ -260,7 +261,9 @@ export default function OverviewPage() {
                   <span className="text-xs">({formatPct(portfolioTotals.returnPct)})</span>
                 </td>
               </tr>
-              {strategies.slice(0, 5).map((s: any) => (
+              {strategies.slice(0, 5).map((s: any) => {
+                const tail = walletTail(s.account_id);
+                return (
                 <tr
                   key={s.strategy_name}
                   onClick={() =>
@@ -275,11 +278,14 @@ export default function OverviewPage() {
                   }`}
                 >
                   <td
-                    className="w-36 py-2.5 pr-3 font-medium leading-tight"
-                    title={s.strategy_name}
+                    className="w-44 py-2.5 pr-3 font-medium leading-tight"
+                    title={s.account_id ? `${s.strategy_name} · ${s.account_id}` : s.strategy_name}
                   >
                     <span className="line-clamp-2 break-words">
                       {String(s.strategy_name).replace(/_/g, '_\u200b')}
+                      {tail ? (
+                        <span className="font-num text-hl-muted"> ({tail})</span>
+                      ) : null}
                     </span>
                   </td>
                   <td className="py-2.5 text-right font-num text-hl-secondary">
@@ -307,7 +313,8 @@ export default function OverviewPage() {
                     <span className="text-xs">({formatPct(s.inception_return_pct)})</span>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         ) : (

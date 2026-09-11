@@ -41,6 +41,7 @@ export interface EquityCurvePoint {
 
 export interface StrategyLeaderboardRow {
   strategy_name: string;
+  account_id: string | null;
   status: string;
   pnl: number;
   return_pct: number;
@@ -1099,10 +1100,23 @@ export async function getStrategyLeaderboard(
           COALESCE(SUM(ts.unrealized_pnl), 0) AS unrealized_pnl
         FROM trading_state ts
         GROUP BY ts.strategy_name
+      ),
+      latest_accounts AS (
+        SELECT DISTINCT ON (COALESCE(strategy_name, 'unknown'))
+          COALESCE(strategy_name, 'unknown') AS strategy_name,
+          account_id
+        FROM trading_sessions
+        WHERE account_id IS NOT NULL
+          AND account_id <> ''
+          AND account_id <> 'unknown_account'
+        ORDER BY COALESCE(strategy_name, 'unknown'),
+                 (status = 'running') DESC,
+                 started_at DESC NULLS LAST
       )
       SELECT
         st.strategy_name,
-        'running' AS status,
+        a.account_id,
+        'running' AS status;
         COALESCE(st.baseline_ts, st.first_ts) AS first_ts,
         st.first_ts AS inception_ts,
         st.latest_ts,
@@ -1120,6 +1134,7 @@ export async function getStrategyLeaderboard(
       LEFT JOIN strategy_equity p
         ON p.strategy_name = st.strategy_name AND p.ts = st.baseline_ts
       LEFT JOIN state_metrics n ON n.strategy_name = st.strategy_name
+      LEFT JOIN latest_accounts a ON a.strategy_name = st.strategy_name
       ORDER BY l.total_equity DESC
       LIMIT 10
     `,
@@ -1163,6 +1178,7 @@ export async function getStrategyLeaderboard(
       const annualizedRate = elapsedDays > 0 ? returnRate * (365 / elapsedDays) : returnRate;
       return {
         strategy_name: r.strategy_name,
+        account_id: r.account_id || null,
         status: r.status || 'unknown',
         pnl,
         return_pct: returnRate * 100,
