@@ -1116,7 +1116,7 @@ export async function getStrategyLeaderboard(
       SELECT
         st.strategy_name,
         a.account_id,
-        'running' AS status;
+        'running' AS status,
         COALESCE(st.baseline_ts, st.first_ts) AS first_ts,
         st.first_ts AS inception_ts,
         st.latest_ts,
