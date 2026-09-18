@@ -7,9 +7,42 @@ import PositionPriceChart from '../../components/PositionPriceChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
+type SortDirection = 'asc' | 'desc';
+
+type SortColumn = {
+  key: string;
+  label: string;
+  align?: 'left' | 'right';
+  value: (position: any) => string | number | null | undefined;
+};
+
+const positionColumns: SortColumn[] = [
+  { key: 'symbol', label: 'Symbol', value: (p) => p.symbol },
+  { key: 'strategy', label: 'Strategy', value: (p) => p.strategy_name },
+  { key: 'side', label: 'Side', value: (p) => p.side },
+  { key: 'size', label: 'Size', align: 'right', value: (p) => Math.abs(Number(p.position_qty)) },
+  { key: 'notional', label: 'Notional', align: 'right', value: (p) => p.notional },
+  { key: 'leverage', label: 'Leverage', align: 'right', value: (p) => p.leverage },
+  { key: 'entry', label: 'Entry', align: 'right', value: (p) => p.avg_entry_price },
+  { key: 'mark', label: 'Mark', align: 'right', value: (p) => p.mark_price },
+  { key: 'liquidation', label: 'Liq. Price', align: 'right', value: (p) => p.liquidation_price },
+  { key: 'upnl', label: 'uPnL', align: 'right', value: (p) => p.unrealized_pnl },
+  { key: 'adjustedPnl', label: 'Adj. PnL', align: 'right', value: (p) => p.adjusted_pnl },
+  { key: 'funding', label: 'Funding', align: 'right', value: (p) => p.funding_accrued },
+  { key: 'fees', label: 'Fees', align: 'right', value: (p) => p.total_fee },
+  { key: 'margin', label: 'Margin', align: 'right', value: (p) => p.margin },
+  {
+    key: 'updated',
+    label: 'Updated',
+    value: (p) => (p.updated_at ? new Date(p.updated_at).getTime() : null),
+  },
+];
+
 export default function PositionsPage() {
   const [paused, setPaused] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState('upnl');
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
   const { data, error, isLoading } = useSWR('/api/positions', fetcher, {
     refreshInterval: paused ? 0 : 5000, // 5s for live data
@@ -21,10 +54,33 @@ export default function PositionsPage() {
   const openOrders = data?.data?.openOrders || [];
   const asOfTs = data?.as_of_ts;
 
-  // Sort by |uPnL| desc
-  const sortedPositions = [...positions].sort(
-    (a, b) => Math.abs(b.unrealized_pnl) - Math.abs(a.unrealized_pnl)
-  );
+  const sortColumn = positionColumns.find((column) => column.key === sortKey)!;
+  const sortedPositions = [...positions].sort((a, b) => {
+    const aValue = sortColumn.value(a);
+    const bValue = sortColumn.value(b);
+
+    // Missing values always stay at the bottom.
+    if (aValue == null || aValue === '') return bValue == null || bValue === '' ? 0 : 1;
+    if (bValue == null || bValue === '') return -1;
+
+    const comparison =
+      typeof aValue === 'number' && typeof bValue === 'number'
+        ? aValue - bValue
+        : String(aValue).localeCompare(String(bValue), undefined, {
+            numeric: true,
+            sensitivity: 'base',
+          });
+    return sortDirection === 'asc' ? comparison : -comparison;
+  });
+
+  function handleSort(key: string) {
+    if (key === sortKey) {
+      setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDirection('desc');
+  }
 
   return (
     <div className="px-4 py-6 max-w-7xl mx-auto">
@@ -113,21 +169,15 @@ export default function PositionsPage() {
           <table className="w-full data-table">
             <thead>
               <tr>
-                <th className="text-left">Symbol</th>
-                <th className="text-left">Strategy</th>
-                <th className="text-left">Side</th>
-                <th className="text-right">Size</th>
-                <th className="text-right">Notional</th>
-                <th className="text-right">Leverage</th>
-                <th className="text-right">Entry</th>
-                <th className="text-right">Mark</th>
-                <th className="text-right">Liq. Price</th>
-                <th className="text-right">uPnL</th>
-                <th className="text-right">Adj. PnL</th>
-                <th className="text-right">Funding</th>
-                <th className="text-right">Fees</th>
-                <th className="text-right">Margin</th>
-                <th className="text-left">Updated</th>
+                {positionColumns.map((column) => (
+                  <SortableHeader
+                    key={column.key}
+                    column={column}
+                    active={sortKey === column.key}
+                    direction={sortDirection}
+                    onSort={handleSort}
+                  />
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -160,6 +210,45 @@ export default function PositionsPage() {
         Last update: {formatTime(asOfTs)}
       </div>
     </div>
+  );
+}
+
+function SortableHeader({
+  column,
+  active,
+  direction,
+  onSort,
+}: {
+  column: SortColumn;
+  active: boolean;
+  direction: SortDirection;
+  onSort: (key: string) => void;
+}) {
+  const ariaSort = active
+    ? direction === 'asc'
+      ? 'ascending'
+      : 'descending'
+    : 'none';
+
+  return (
+    <th
+      className={column.align === 'right' ? 'text-right' : 'text-left'}
+      aria-sort={ariaSort}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(column.key)}
+        className={`inline-flex w-full items-center gap-1 whitespace-nowrap hover:text-hl-text ${
+          column.align === 'right' ? 'justify-end' : 'justify-start'
+        } ${active ? 'text-hl-accent' : ''}`}
+        title={`Sort by ${column.label}`}
+      >
+        <span>{column.label}</span>
+        <span className={`text-[10px] ${active ? 'opacity-100' : 'opacity-30'}`} aria-hidden="true">
+          {active ? (direction === 'asc' ? '▲' : '▼') : '↕'}
+        </span>
+      </button>
+    </th>
   );
 }
 
