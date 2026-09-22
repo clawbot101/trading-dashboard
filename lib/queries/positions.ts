@@ -4,6 +4,7 @@
  */
 
 import { query, queryOne, db } from '../db';
+import { HIDDEN_STRATEGIES } from '../hidden-strategies';
 
 export interface LivePosition {
   state_key: string;
@@ -87,10 +88,11 @@ export async function getLivePositions(
       unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0) as adjusted_pnl
     FROM trading_state
     WHERE position_qty != 0
+      AND strategy_name <> ALL($1::text[])
     ORDER BY ABS(unrealized_pnl) DESC
   `;
 
-  return query<LivePosition>(sql);
+  return query<LivePosition>(sql, [[...HIDDEN_STRATEGIES]]);
 }
 
 /**
@@ -117,6 +119,7 @@ export async function getPositionSummary(
         margin
       FROM trading_state
       WHERE position_qty != 0
+        AND strategy_name <> ALL($1::text[])
     ),
     open_accounts AS (
       SELECT DISTINCT account_id FROM open_pos
@@ -155,7 +158,7 @@ export async function getPositionSummary(
     FROM open_pos
   `;
 
-  return queryOne<PositionSummary>(sql);
+  return queryOne<PositionSummary>(sql, [[...HIDDEN_STRATEGIES]]);
 }
 
 /**

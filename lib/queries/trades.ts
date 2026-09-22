@@ -293,6 +293,7 @@ export async function getPositionLifecycles(
         ts.mark_price,
         ts.unrealized_pnl
       FROM trading_state ts
+      WHERE ts.strategy_name <> ALL('{hip3_xsec_skip_momentum}'::text[])
       ORDER BY ts.strategy_name, ts.venue, ts.symbol, ts.updated_at DESC
     ),
     funding_deltas AS (

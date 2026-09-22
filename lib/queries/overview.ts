@@ -11,6 +11,7 @@
  */
 
 import { query, queryOne } from '../db';
+import { HIDDEN_STRATEGIES } from '../hidden-strategies';
 
 export interface OverviewStats {
   total_equity: number;
@@ -164,6 +165,10 @@ function buildFilters(
     clauses.push(`${tableAlias}.venue = $${idx++}`);
     params.push(options.venue);
   }
+
+  const strategyColumn = withSessionJoin ? 'sess.strategy_name' : `${tableAlias}.strategy_name`;
+  clauses.push(`${strategyColumn} <> ALL($${idx++}::text[])`);
+  params.push([...HIDDEN_STRATEGIES]);
 
   const strategies = normalizeStrategies(options.strategies);
   if (withSessionJoin && strategies?.length) {
@@ -556,6 +561,8 @@ async function getAdjustedPnlSummary(
     params.push(strategiesFilter);
     strategiesParamIdx = params.length;
   }
+  params.push([...HIDDEN_STRATEGIES]);
+  const hiddenParamIdx = params.length;
 
   const fillWhereParts: string[] = [];
   const fundingWhereParts: string[] = [];
@@ -570,6 +577,9 @@ async function getAdjustedPnlSummary(
     fundingWhereParts.push(`sess.strategy_name = ANY($${strategiesParamIdx}::text[])`);
     stateWhereParts.push(`ts.strategy_name = ANY($${strategiesParamIdx}::text[])`);
   }
+  fillWhereParts.push(`sess.strategy_name <> ALL($${hiddenParamIdx}::text[])`);
+  fundingWhereParts.push(`sess.strategy_name <> ALL($${hiddenParamIdx}::text[])`);
+  stateWhereParts.push(`ts.strategy_name <> ALL($${hiddenParamIdx}::text[])`);
 
   const fillWhereSql = fillWhereParts.length ? `AND ${fillWhereParts.join(' AND ')}` : '';
   const fundingWhereSql = fundingWhereParts.length ? `AND ${fundingWhereParts.join(' AND ')}` : '';
@@ -1099,6 +1109,7 @@ export async function getStrategyLeaderboard(
           COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) AS notional,
           COALESCE(SUM(ts.unrealized_pnl), 0) AS unrealized_pnl
         FROM trading_state ts
+        WHERE ts.strategy_name <> ALL($${eqFilters.params.length + 3}::text[])
         GROUP BY ts.strategy_name
       ),
       latest_accounts AS (
@@ -1109,6 +1120,7 @@ export async function getStrategyLeaderboard(
         WHERE account_id IS NOT NULL
           AND account_id <> ''
           AND account_id <> 'unknown_account'
+          AND COALESCE(strategy_name, 'unknown') <> ALL($${eqFilters.params.length + 3}::text[])
         ORDER BY COALESCE(strategy_name, 'unknown'),
                  (status = 'running') DESC,
                  started_at DESC NULLS LAST
@@ -1138,7 +1150,7 @@ export async function getStrategyLeaderboard(
       ORDER BY l.total_equity DESC
       LIMIT 10
     `,
-    [to_ts, from_ts, ...eqFilters.params]
+    [to_ts, from_ts, ...eqFilters.params, [...HIDDEN_STRATEGIES]]
   );
 
   const withPnl = await Promise.all(
@@ -1301,11 +1313,12 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
       f.fee
     FROM fills f
     LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+    WHERE COALESCE(sess.strategy_name, '') <> ALL($2::text[])
     ORDER BY f.ts DESC
     LIMIT $1
   `;
 
-  return query<RecentFill>(sql, [limit]);
+  return query<RecentFill>(sql, [limit, [...HIDDEN_STRATEGIES]]);
 }
 
 /**
@@ -1358,6 +1371,7 @@ export async function getRecentActivityPage(
           ) AS payload
         FROM fills f
         LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+        WHERE COALESCE(sess.strategy_name, '') <> ALL('{hip3_xsec_skip_momentum}'::text[])
       ),
       rebalance_days AS (
         SELECT generate_series(

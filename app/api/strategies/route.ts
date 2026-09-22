@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { query } from '../../../lib/db';
+import { HIDDEN_STRATEGIES } from '../../../lib/hidden-strategies';
 
 // Strategy Live Overview - aggregated by strategy instance
 interface StrategyOverview {
@@ -39,8 +40,10 @@ export async function GET() {
          AND ts.venue = sess.venue
          AND ts.account_id = sess.account_id
          AND sess.status = 'running'
+       WHERE ts.strategy_name <> ALL($1::text[])
        GROUP BY ts.strategy_name, ts.strategy_slot, ts.venue, ts.account_id, sess.session_id, sess.status
-       ORDER BY ts.strategy_name, ts.strategy_slot`
+       ORDER BY ts.strategy_name, ts.strategy_slot`,
+      [[...HIDDEN_STRATEGIES]]
     );
     return NextResponse.json({ strategies, ok: true });
   } catch (err) {
