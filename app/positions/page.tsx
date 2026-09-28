@@ -165,8 +165,8 @@ export default function PositionsPage() {
 
       {/* Positions table */}
       {!isLoading && (
-        <div className="panel overflow-hidden">
-          <table className="w-full data-table">
+        <div className="panel overflow-x-auto">
+          <table className="w-full min-w-max whitespace-nowrap data-table">
             <thead>
               <tr>
                 {positionColumns.map((column) => (
