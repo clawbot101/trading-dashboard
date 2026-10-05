@@ -12,6 +12,17 @@
 
 import { query, queryOne } from '../db';
 import { HIDDEN_STRATEGIES } from '../hidden-strategies';
+import { cached } from '../cache';
+import {
+  bucketStartMs,
+  curveStepSeconds,
+  rangeWindowMs,
+  sliceCurveToWindow,
+  stitchEquityCurves,
+  type CurveResolution,
+} from '../equityCurve';
+
+export type { CurveResolution };
 
 export interface OverviewStats {
   total_equity: number;
@@ -753,74 +764,163 @@ async function getAdjustedPnlSummary(
   };
 }
 
+type CurvePrefixEntry = {
+  fromMs: number;
+  untilMs: number;
+  points: EquityCurvePoint[];
+};
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __equityCurvePrefix: Map<string, CurvePrefixEntry> | undefined;
+  // eslint-disable-next-line no-var
+  var __equityCurvePrefixInflight: Map<string, Promise<EquityCurvePoint[]>> | undefined;
+}
+
+const curvePrefixCache = global.__equityCurvePrefix ?? new Map<string, CurvePrefixEntry>();
+const curvePrefixInflight =
+  global.__equityCurvePrefixInflight ?? new Map<string, Promise<EquityCurvePoint[]>>();
+
+if (process.env.NODE_ENV !== 'production') {
+  global.__equityCurvePrefix = curvePrefixCache;
+  global.__equityCurvePrefixInflight = curvePrefixInflight;
+}
+
+function curveScopeKey(
+  timeRange: string,
+  venue: string | undefined,
+  strategies: string[] | undefined,
+  resolution: CurveResolution,
+  stepSeconds: number
+): string {
+  const strat = normalizeStrategies(strategies)?.slice().sort().join(',') || 'all';
+  return `v1:${timeRange}:${venue ?? 'all'}:${strat}:${resolution}:${stepSeconds}`;
+}
+
 /**
- * Get equity curve.
+ * Portfolio equity curve.
+ *
+ * `coarse` is the fast preview: one point per hour (24H) or per day (longer
+ * ranges). `fine` is the chart the page settles on. Either way, buckets that
+ * have already closed are cached — that history does not change — and only the
+ * open bucket is read again.
  */
 export async function getEquityCurve(
   timeRange = '24H',
   venue?: string,
-  strategies?: string[]
+  strategies?: string[],
+  resolution: CurveResolution = 'fine'
 ): Promise<EquityCurvePoint[]> {
-  const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue, strategies };
+  const stepSeconds = curveStepSeconds(timeRange, resolution);
+  const nowMs = Date.now();
+  const closedUntilMs = bucketStartMs(nowMs, stepSeconds);
+  const windowMs = rangeWindowMs(timeRange);
+  const fromMs =
+    windowMs == null
+      ? bucketStartMs(Date.parse('2000-01-01T00:00:00Z'), stepSeconds)
+      : bucketStartMs(nowMs - windowMs, stepSeconds);
 
-  if (timeRange === 'ALL') {
-    // For ALL range, read complete history and downsample only for chart rendering.
-    const eqFiltersAll = buildFilters(1, options, true, 'e');
-    const allRows = await query<EquityCurvePoint>(
-      `
-        WITH equity_by_key AS (
-          SELECT
-            e.ts,
-            COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
-            COALESCE(e.venue, 'unknown') AS venue,
-            MAX(e.equity) AS equity
-          FROM equity_snapshots e
-          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-          ${eqFiltersAll.clauses.length ? `WHERE ${eqFiltersAll.clauses.join(' AND ')}` : ''}
-          GROUP BY e.ts, COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown')
-        ),
-        key_changes AS (
-          SELECT
-            ebk.strategy_name,
-            ebk.venue,
-            ebk.ts,
-            ebk.equity - COALESCE(
-              LAG(ebk.equity) OVER (
-                PARTITION BY ebk.strategy_name, ebk.venue
-                ORDER BY ebk.ts
-              ),
-              0
-            ) AS delta
-          FROM equity_by_key ebk
-        ),
-        ts_deltas AS (
-          SELECT
-            ts,
-            SUM(delta) AS delta
-          FROM key_changes
-          GROUP BY ts
-        ),
-        portfolio_curve AS (
-          SELECT
-            ts,
-            SUM(delta) OVER (
-              ORDER BY ts
-              ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-            ) AS equity
-          FROM ts_deltas
-        )
-        SELECT ts, equity
-        FROM portfolio_curve
-        ORDER BY ts ASC
-      `,
-      eqFiltersAll.params
+  let points: EquityCurvePoint[] = [];
+  if (closedUntilMs > fromMs) {
+    const prefix = await loadClosedEquityPrefix(
+      timeRange,
+      options,
+      resolution,
+      stepSeconds,
+      fromMs,
+      closedUntilMs
     );
-    return downsampleEquityCurve(allRows, 2000);
+    const tail = await queryEquityCurveWindow(
+      new Date(closedUntilMs).toISOString(),
+      new Date(nowMs).toISOString(),
+      options,
+      stepSeconds
+    );
+    points = stitchEquityCurves(prefix, tail);
+  } else {
+    points = await queryEquityCurveWindow(
+      new Date(fromMs).toISOString(),
+      new Date(nowMs).toISOString(),
+      options,
+      stepSeconds
+    );
   }
 
+  if (points.length > 0) {
+    const maxPointsByRange: Record<string, number> = {
+      '24H': 1500,
+      '7D': 2000,
+      '30D': 2500,
+      '90D': 3000,
+      ALL: 2000,
+    };
+    return downsampleEquityCurve(points, maxPointsByRange[timeRange] ?? 2000);
+  }
+
+  return queryLatestEquityCurve(options);
+}
+
+async function loadClosedEquityPrefix(
+  timeRange: string,
+  options: QueryFilters,
+  resolution: CurveResolution,
+  stepSeconds: number,
+  fromMs: number,
+  untilMs: number
+): Promise<EquityCurvePoint[]> {
+  const scope = curveScopeKey(timeRange, options.venue, options.strategies, resolution, stepSeconds);
+  const cachedPrefix = curvePrefixCache.get(scope);
+  if (cachedPrefix && cachedPrefix.fromMs === fromMs && cachedPrefix.untilMs === untilMs) {
+    return cachedPrefix.points;
+  }
+
+  const flightKey = `${scope}:${fromMs}:${untilMs}`;
+  const existing = curvePrefixInflight.get(flightKey);
+  if (existing) return existing;
+
+  const run = (async () => {
+    const previous = curvePrefixCache.get(scope);
+    let points: EquityCurvePoint[];
+    if (
+      previous &&
+      previous.points.length &&
+      previous.untilMs < untilMs &&
+      previous.untilMs > fromMs &&
+      previous.fromMs <= fromMs
+    ) {
+      const extension = await queryEquityCurveWindow(
+        new Date(previous.untilMs).toISOString(),
+        new Date(untilMs).toISOString(),
+        options,
+        stepSeconds
+      );
+      points = stitchEquityCurves(sliceCurveToWindow(previous.points, fromMs), extension);
+    } else {
+      points = await queryEquityCurveWindow(
+        new Date(fromMs).toISOString(),
+        new Date(untilMs).toISOString(),
+        options,
+        stepSeconds
+      );
+    }
+    curvePrefixCache.set(scope, { fromMs, untilMs, points });
+    return points;
+  })().finally(() => {
+    curvePrefixInflight.delete(flightKey);
+  });
+
+  curvePrefixInflight.set(flightKey, run);
+  return run;
+}
+
+async function queryEquityCurveWindow(
+  fromTs: string,
+  toTs: string,
+  options: QueryFilters,
+  stepSeconds: number
+): Promise<EquityCurvePoint[]> {
   const eqFilters = buildFilters(3, options, true, 'e');
-  const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
   const eqAnd = eqFilters.clauses.length ? `AND ${eqFilters.clauses.join(' AND ')}` : '';
   const includePendingCashFlows = await hasCashFlowsTable();
   // When the bot is down, deposits can be written to cash_flows before the next
@@ -849,19 +949,35 @@ export async function getEquityCurve(
       `
     : `COALESCE(last_eq.equity, 0)`;
 
+  const stepRef = `$${3 + eqFilters.params.length}`;
+  const keyClauses = eqFilters.clauses.map((clause) =>
+    clause.replaceAll('e.venue', 'venue').replaceAll('sess.strategy_name', 'strategy_name')
+  );
+  const keyWhere = keyClauses.length ? `WHERE ${keyClauses.join(' AND ')}` : '';
+
   const rows = await query<EquityCurvePoint>(
     `
-      -- The seed lookup and the in-range scan read equity_snapshots directly rather
-      -- than a materialized full-history CTE: a CTE has no indexes, so the per-key
-      -- LATERAL used to re-scan every snapshot ever taken. Hitting the base table
-      -- lets both use the ts index, so a 24H window touches only a day of rows.
+      -- Keys come from trading_sessions (one indexed lookup each) instead of
+      -- DISTINCT over every equity snapshot. In-range rows are collapsed to the
+      -- last snapshot in each bucket before the portfolio window runs, so a 90D
+      -- daily preview never sorts tens of thousands of 5-minute points.
       WITH keys AS (
-        SELECT DISTINCT
-          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
-          COALESCE(e.venue, 'unknown') AS venue
-        FROM equity_snapshots e
-        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-        ${eqWhere}
+        SELECT DISTINCT strategy_name, venue
+        FROM (
+          SELECT
+            COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+            COALESCE(snap.venue, 'unknown') AS venue
+          FROM trading_sessions sess
+          JOIN LATERAL (
+            SELECT e.venue
+            FROM equity_snapshots e
+            WHERE e.session_id = sess.session_id
+              AND e.ts <= $1
+            ORDER BY e.ts DESC
+            LIMIT 1
+          ) snap ON TRUE
+        ) listed
+        ${keyWhere}
       ),
       seed_per_key AS (
         SELECT
@@ -883,18 +999,26 @@ export async function getEquityCurve(
         ) last_eq ON TRUE
       ),
       in_range AS (
-        SELECT
-          COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
-          COALESCE(e.venue, 'unknown') AS venue,
-          e.ts,
-          MAX(e.equity) AS equity,
-          MAX(COALESCE(e.unrealized_pnl, 0)) AS unrealized_pnl
-        FROM equity_snapshots e
-        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
-        WHERE e.ts > $2
-          AND e.ts <= $1
-          ${eqAnd}
-        GROUP BY 1, 2, 3
+        SELECT DISTINCT ON (strategy_name, venue, bucket)
+          strategy_name,
+          venue,
+          ts,
+          equity
+        FROM (
+          SELECT
+            COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
+            COALESCE(e.venue, 'unknown') AS venue,
+            floor(extract(epoch FROM e.ts) / ${stepRef}::int)::bigint AS bucket,
+            e.ts,
+            MAX(e.equity) AS equity
+          FROM equity_snapshots e
+          LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          WHERE e.ts > $2
+            AND e.ts <= $1
+            ${eqAnd}
+          GROUP BY 1, 2, 3, 4
+        ) per_ts
+        ORDER BY strategy_name, venue, bucket, ts DESC
       ),
       unioned AS (
         -- Only seed keys that already had equity at period start. A 0 seed for
@@ -941,24 +1065,16 @@ export async function getEquityCurve(
       FROM portfolio_curve
       ORDER BY ts ASC
     `,
-    [to_ts, from_ts, ...eqFilters.params]
+    [toTs, fromTs, ...eqFilters.params, stepSeconds]
   );
 
-  if (rows.length > 0) {
-    // Keep full requested period semantics while bounding frontend render cost.
-    const maxPointsByRange: Record<string, number> = {
-      '24H': 1500,
-      '7D': 2000,
-      '30D': 2500,
-      '90D': 3000,
-      'ALL': 2000,
-    };
-    const maxPoints = maxPointsByRange[timeRange] ?? 2000;
-    return downsampleEquityCurve(rows, maxPoints);
-  }
+  return rows;
+}
 
+async function queryLatestEquityCurve(options: QueryFilters): Promise<EquityCurvePoint[]> {
+  const eqFilters = buildFilters(1, options, true, 'e');
   // Fallback for stale data: show the latest points even if outside requested range.
-  return query<EquityCurvePoint>(
+  const latestRows = await query<EquityCurvePoint>(
     `
       WITH equity_by_key AS (
         SELECT
@@ -1007,7 +1123,8 @@ export async function getEquityCurve(
       LIMIT 3000
     `,
     eqFilters.params
-  ).then((latestRows) => latestRows.reverse());
+  );
+  return latestRows.reverse();
 }
 
 function downsampleEquityCurve(points: EquityCurvePoint[], maxPoints: number): EquityCurvePoint[] {
@@ -2024,26 +2141,52 @@ async function getRealCashFlowDelta(
   return Number(row?.net_cash_flow ?? 0);
 }
 
+/** Later strategies' first equity is a transfer. The set changes only when a strategy starts. */
+const INCEPTION_FLOW_TTL_MS = 10 * 60 * 1000;
+
 async function getStrategyInceptionFlowEvents(
   fromTs: string,
   toTs: string,
   options: QueryFilters
 ): Promise<CashFlowEvent[]> {
-  const eqFilters = buildFilters(3, options, true, 'e');
+  const strat = normalizeStrategies(options.strategies)?.slice().sort().join(',') || 'all';
+  const cacheKey = `inception-flows:v1:${options.venue ?? 'all'}:${strat}`;
+  const all = await cached(cacheKey, INCEPTION_FLOW_TTL_MS, () =>
+    queryStrategyInceptionFlowEvents(options)
+  );
+  const fromMs = new Date(fromTs).getTime();
+  const toMs = new Date(toTs).getTime();
+  return all.filter((flow) => {
+    const ms = new Date(flow.ts).getTime();
+    return ms > fromMs && ms <= toMs;
+  });
+}
+
+async function queryStrategyInceptionFlowEvents(
+  options: QueryFilters
+): Promise<CashFlowEvent[]> {
+  const eqFilters = buildFilters(1, options, true, 'e');
   const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
 
+  // First snapshot per session via the session index, not a group-by over every
+  // equity row. These events are identical on every chart refresh.
   return query<CashFlowEvent>(
     `
-      WITH equity_by_key AS (
+      WITH first_snap AS (
         SELECT
           COALESCE(sess.strategy_name, 'unknown') AS strategy_name,
           COALESCE(e.venue, 'unknown') AS venue,
           e.ts,
-          MAX(e.equity) AS equity
-        FROM equity_snapshots e
-        LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+          e.equity
+        FROM trading_sessions sess
+        JOIN LATERAL (
+          SELECT snap.ts, snap.venue, snap.equity
+          FROM equity_snapshots snap
+          WHERE snap.session_id = sess.session_id
+          ORDER BY snap.ts ASC
+          LIMIT 1
+        ) e ON TRUE
         ${eqWhere}
-        GROUP BY COALESCE(sess.strategy_name, 'unknown'), COALESCE(e.venue, 'unknown'), e.ts
       ),
       first_per_key AS (
         SELECT DISTINCT ON (strategy_name, venue)
@@ -2051,7 +2194,7 @@ async function getStrategyInceptionFlowEvents(
           venue,
           ts AS first_ts,
           equity AS first_equity
-        FROM equity_by_key
+        FROM first_snap
         ORDER BY strategy_name, venue, ts ASC
       ),
       global_start AS (
@@ -2063,11 +2206,9 @@ async function getStrategyInceptionFlowEvents(
       FROM first_per_key f
       CROSS JOIN global_start g
       WHERE f.first_ts > g.start_ts
-        AND f.first_ts > $1
-        AND f.first_ts <= $2
       ORDER BY f.first_ts ASC
     `,
-    [fromTs, toTs, ...eqFilters.params]
+    eqFilters.params
   );
 }
 

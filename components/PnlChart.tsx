@@ -30,6 +30,11 @@ function toUniqueSecondData(points: PnlCurvePoint[]) {
     .map(([sec, val]) => ({ time: sec as UTCTimestamp, value: val }));
 }
 
+function chartFitKey(points: { ts: string }[]): string {
+  if (!points.length) return '';
+  return `${points[0].ts}:${Math.floor(points.length / 25)}`;
+}
+
 function formatPnl(n: number): string {
   const sign = n >= 0 ? '+' : '';
   return `${sign}${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -56,7 +61,8 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<PnlCurvePoint[]>(data);
-  const hasFittedRef = useRef(false);
+  const fittedKeyRef = useRef('');
+  const fitKey = chartFitKey(data);
   const [hoverInfo, setHoverInfo] = useState<{ value: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -127,7 +133,7 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
       seriesRef.current = baselineSeries;
       baselineSeries.setData(toUniqueSecondData(dataRef.current));
       chart.timeScale().fitContent();
-      hasFittedRef.current = true;
+      fittedKeyRef.current = chartFitKey(dataRef.current);
 
       const handleCrosshairMove = (param: any) => {
         if (!seriesRef.current || !param?.point) {
@@ -184,11 +190,11 @@ function ChartInner({ data, height = 260 }: PnlChartProps) {
   useEffect(() => {
     if (!seriesRef.current || !data.length) return;
     seriesRef.current.setData(toUniqueSecondData(data));
-    if (chartRef.current && !hasFittedRef.current) {
+    if (chartRef.current && fittedKeyRef.current !== fitKey) {
       chartRef.current.timeScale().fitContent();
-      hasFittedRef.current = true;
+      fittedKeyRef.current = fitKey;
     }
-  }, [data]);
+  }, [data, fitKey]);
 
   return (
     <div className="relative">

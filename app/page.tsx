@@ -20,6 +20,20 @@ const fetcher = async (url: string) => {
 const TIME_RANGES = ['24H', '7D', '30D', '90D', 'ALL'];
 const EMPTY_LIST: any[] = [];
 
+function curvePayloadMatches(
+  payload: any,
+  range: string,
+  strategy: string,
+  resolution: 'coarse' | 'fine'
+) {
+  return (
+    payload?.query?.range === range &&
+    payload?.query?.strategy === strategy &&
+    payload?.query?.resolution === resolution &&
+    Array.isArray(payload?.data?.equityCurve)
+  );
+}
+
 export default function OverviewPage() {
   const [timeRange, setTimeRange] = useState('24H');
   const [paused, setPaused] = useState(false);
@@ -28,19 +42,38 @@ export default function OverviewPage() {
   const [selectedStrategy, setSelectedStrategy] = useState<string>('all');
   const periodLabel = timeRange === 'ALL' ? 'Since Start' : `Since ${timeRange}`;
 
-  // Split into the sections that depend on the selected strategy and the ones that
-  // do not. Switching strategy then only refetches the former, instead of redoing
-  // the leaderboard and venue split (~4s of query time) that come back identical.
-  // keepPreviousData holds the last values on screen during a switch, so the page
-  // no longer blanks out and flashes the connection-error banner.
-  const { data, error, isLoading } = useSWR(
-    `/api/overview?range=${timeRange.toLowerCase()}&strategy=${encodeURIComponent(selectedStrategy)}&parts=stats,curve`,
+  // Stats and the curve are separate requests so the cards are not stuck behind
+  // the chart query. The curve itself is two-step: a coarse preview (hourly for
+  // 24H, daily otherwise) paints immediately, then the fine series replaces it.
+  // Fine does not start until the matching preview is in, so it does not compete
+  // with that preview on the single-CPU database.
+  const rangeParam = timeRange.toLowerCase();
+  const strategyParam = encodeURIComponent(selectedStrategy);
+  const swrOpts = {
+    refreshInterval: paused ? 0 : 60000,
+    dedupingInterval: 30000,
+    keepPreviousData: true,
+  };
+
+  const { data: statsPayload, error: statsError, isLoading } = useSWR(
+    `/api/overview?range=${rangeParam}&strategy=${strategyParam}&parts=stats`,
     fetcher,
-    {
-      refreshInterval: paused ? 0 : 60000, // 60s for analytics
-      dedupingInterval: 30000,
-      keepPreviousData: true,
-    }
+    swrOpts
+  );
+
+  const { data: coarsePayload, error: coarseError } = useSWR(
+    `/api/overview?range=${rangeParam}&strategy=${strategyParam}&parts=curve&resolution=coarse`,
+    fetcher,
+    swrOpts
+  );
+
+  const coarseReady = curvePayloadMatches(coarsePayload, rangeParam, selectedStrategy, 'coarse');
+  const { data: finePayload, error: fineError } = useSWR(
+    coarseReady
+      ? `/api/overview?range=${rangeParam}&strategy=${strategyParam}&parts=curve&resolution=fine`
+      : null,
+    fetcher,
+    swrOpts
   );
 
   // Strategy-independent, so the key deliberately omits the selected strategy and
@@ -55,12 +88,20 @@ export default function OverviewPage() {
     }
   );
 
-  const stats = data?.data?.stats;
-  const equityCurve = data?.data?.equityCurve ?? EMPTY_LIST;
-  const cashFlowEvents = data?.data?.cashFlowEvents ?? EMPTY_LIST;
+  const fineReady = curvePayloadMatches(finePayload, rangeParam, selectedStrategy, 'fine');
+  const curvePayload = fineReady
+    ? finePayload
+    : coarseReady
+      ? coarsePayload
+      : finePayload ?? coarsePayload;
+  const curveIsPreview = coarseReady && !fineReady;
+
+  const stats = statsPayload?.data?.stats;
+  const equityCurve = curvePayload?.data?.equityCurve ?? EMPTY_LIST;
+  const cashFlowEvents = curvePayload?.data?.cashFlowEvents ?? EMPTY_LIST;
   const strategies = sharedData?.data?.strategyLeaderboard ?? EMPTY_LIST;
   const venueSplit = sharedData?.data?.venueSplit ?? EMPTY_LIST;
-  const asOf = data?.as_of_ts;
+  const asOf = curvePayload?.as_of_ts ?? statsPayload?.as_of_ts;
 
   const { data: activityData, isLoading: isActivityLoading } = useSWR(
     `/api/recent-activity?tab=all&page=${activityPage}&pageSize=10`,
@@ -179,7 +220,7 @@ export default function OverviewPage() {
       </div>
 
       {/* Error state */}
-      {error && (
+      {(statsError || coarseError) && (
         <div className="mb-4 p-3 bg-hl-loss/20 border border-hl-loss rounded text-hl-loss">
           Connection error. Retrying...
         </div>
@@ -350,7 +391,9 @@ export default function OverviewPage() {
               </button>
             </div>
             <div className="text-xs text-hl-muted">
-              Updated {dataFreshness.text}
+              {curveIsPreview
+                ? `${timeRange === '24H' ? 'Hourly' : 'Daily'} preview${fineError ? '' : ' · loading detail'}`
+                : `Updated ${dataFreshness.text}`}
             </div>
           </div>
           {chartView === 'equity' ? (

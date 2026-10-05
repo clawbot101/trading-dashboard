@@ -30,6 +30,13 @@ function toUniqueSecondData(points: EquityCurvePoint[]) {
     .map(([sec, val]) => ({ time: sec as UTCTimestamp, value: val }));
 }
 
+function chartFitKey(points: { ts: string }[]): string {
+  if (!points.length) return '';
+  // Refit when the window start changes or the series gets much denser
+  // (daily preview swapping to the detailed curve). A single new point does not.
+  return `${points[0].ts}:${Math.floor(points.length / 25)}`;
+}
+
 function formatUsd(n: number): string {
   return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
@@ -56,7 +63,8 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
   const chartRef = useRef<any>(null);
   const seriesRef = useRef<any>(null);
   const dataRef = useRef<EquityCurvePoint[]>(data);
-  const hasFittedRef = useRef(false);
+  const fittedKeyRef = useRef('');
+  const fitKey = chartFitKey(data);
   const [hoverInfo, setHoverInfo] = useState<{ value: number; x: number; y: number } | null>(null);
 
   useEffect(() => {
@@ -123,7 +131,7 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
       const chartData = toUniqueSecondData(dataRef.current);
       lineSeries.setData(chartData);
       chart.timeScale().fitContent();
-      hasFittedRef.current = true;
+      fittedKeyRef.current = chartFitKey(dataRef.current);
 
       const handleCrosshairMove = (param: any) => {
         if (!seriesRef.current || !param?.point) {
@@ -187,11 +195,11 @@ function ChartInner({ data, height = 260 }: EquityChartProps) {
 
     seriesRef.current.setData(chartData);
 
-    if (chartRef.current && !hasFittedRef.current) {
+    if (chartRef.current && fittedKeyRef.current !== fitKey) {
       chartRef.current.timeScale().fitContent();
-      hasFittedRef.current = true;
+      fittedKeyRef.current = fitKey;
     }
-  }, [data]);
+  }, [data, fitKey]);
 
   return (
     <div className="relative">

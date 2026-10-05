@@ -13,6 +13,7 @@ import {
   getLatestRebalanceStatus,
   getCashFlowEvents,
   timeRangeToTimestamps,
+  type CurveResolution,
 } from '../../../lib/queries/overview';
 import { alignCashFlowsToEquityCatchUp } from '../../../lib/pnlCurve';
 import { cached } from '../../../lib/cache';
@@ -39,6 +40,8 @@ const OverviewParamsSchema = z.object({
   venue: z.string().default("all"),
   strategy: z.string().default("all"),
   range: z.enum(['24h', '7d', '30d', '90d', 'all']).default('24h'),
+  // Coarse is the fast preview (hourly / daily). Fine is the settled chart.
+  resolution: z.enum(['coarse', 'fine']).default('fine'),
   // Omitted means every section, so existing callers are unaffected.
   parts: z.string().optional(),
 });
@@ -66,11 +69,12 @@ export async function GET(req: NextRequest) {
     // Strategy only affects stats/curve, so the key drops it for requests that ask
     // for neither. That is what makes switching strategy reuse the shared sections.
     const strategyScope = want('stats') || want('curve') ? (strategy ?? 'all') : 'n/a';
-    const cacheKey = `overview:${timeRange}:${venue ?? 'all'}:${strategyScope}:${parts.join(',')}`;
+    const resolutionScope = want('curve') ? q.resolution : 'n/a';
+    const cacheKey = `overview:${timeRange}:${venue ?? 'all'}:${strategyScope}:${resolutionScope}:${parts.join(',')}`;
 
     const loadCurve = async () => {
       const [equityCurve, cashFlowEventsRaw] = await Promise.all([
-        getEquityCurve(timeRange, venue, filters),
+        getEquityCurve(timeRange, venue, filters, q.resolution as CurveResolution),
         getCashFlowEvents(from_ts, to_ts, venue, filters),
       ]);
       // Align offline deposits onto equity catch-up jumps before the client
