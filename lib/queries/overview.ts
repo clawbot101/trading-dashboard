@@ -8,8 +8,8 @@
  *   from the venue ledger. Equity movement is never guessed to be a cash flow:
  *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
- * - Open PnL on the strategy table matches the position book: mark-to-market
- *   minus leg fees plus funding_accrued on still-open positions.
+ * - Strategy Realized / Open: Total = wallet equity change since first snapshot;
+ *   Open = sum of open legs (mark − fees + funding); Realized = Total − Open.
  */
 
 import { query, queryOne } from '../db';
@@ -553,17 +553,14 @@ export async function getOverviewStats(
   const unrealizedPeriod = unrealizedPnl - unrealizedAtStart;
   const realizedPnl = pnlPeriod - unrealizedPeriod;
   const contributedCapital = initialEquity + Number(cashFlowInception ?? 0);
-  const lifecycleMap = await getLifecyclePnlByStrategy(to_ts, venue, strategies);
-  let lifecycleRealized = 0;
-  for (const v of lifecycleMap.values()) lifecycleRealized += v.realized_pnl;
   const openFromState =
     Math.abs(stateOpenAdjusted) > 1e-9
       ? stateOpenAdjusted
       : Math.abs(stateUnrealized) > 1e-9
         ? stateUnrealized
         : unrealizedPnl;
-  const inceptionRealizedPnl = lifecycleRealized;
-  const inceptionPnl = lifecycleRealized + openFromState;
+  const inceptionPnl = equityNow - contributedCapital;
+  const inceptionRealizedPnl = inceptionPnl - openFromState;
   const unrealizedForDisplay = openFromState;
 
   return {
@@ -1366,8 +1363,6 @@ export async function getStrategyLeaderboard(
     [to_ts, from_ts, ...eqFilters.params, [...(await getArchivedStrategies())]]
   );
 
-  const lifecycleByStrategy = await getLifecyclePnlByStrategy(to_ts, venue);
-
   const withPnl = await Promise.all(
     rows.map(async (r) => {
       const firstEquity = Number(r.first_equity) || 0;
@@ -1389,12 +1384,12 @@ export async function getStrategyLeaderboard(
       const rawUnrealizedPnl = Number(r.unrealized_pnl) || 0;
       const openPnl =
         Math.abs(openAdjustedPnl) > 1e-9 ? openAdjustedPnl : rawUnrealizedPnl;
-      const lifecycle = lifecycleByStrategy.get(r.strategy_name);
-      const inceptionRealizedPnl = lifecycle?.realized_pnl ?? 0;
-      const tradingPnl = inceptionRealizedPnl + openPnl;
-      const inceptionPnl = tradingPnl;
+      // Wallet PnL since first snapshot; Open = live legs (mark − fees + funding).
+      const walletInceptionPnl = latestEquity - contributedCapital;
+      const inceptionPnl = walletInceptionPnl;
+      const inceptionRealizedPnl = walletInceptionPnl - openPnl;
       const inceptionReturnRate =
-        contributedCapital > 0 ? tradingPnl / contributedCapital : 0;
+        contributedCapital > 0 ? walletInceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
       // actual return denominator, then annualize the simple return over the
       // exact period for which this strategy has snapshots. Simple annualization
