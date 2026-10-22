@@ -76,6 +76,7 @@ export async function getLivePositions(
         state_key,
         updated_at,
         session_id,
+        account_id,
         strategy_name,
         venue,
         symbol,
@@ -101,8 +102,18 @@ export async function getLivePositions(
         cumulative_close_fee,
         last_trade_fee,
         last_trade_ts,
-        COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) as total_fee,
-        unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0) as adjusted_pnl`;
+        (
+          SELECT COALESCE(SUM(f.fee), 0)
+          FROM fills f
+          WHERE f.session_id = trading_state.session_id
+            AND f.symbol = trading_state.symbol
+        ) as total_fee,
+        unrealized_pnl - (
+          SELECT COALESCE(SUM(f.fee), 0)
+          FROM fills f
+          WHERE f.session_id = trading_state.session_id
+            AND f.symbol = trading_state.symbol
+        ) + COALESCE(funding_accrued, 0) as adjusted_pnl`;
 
   // Hold time needs the fill that started the current leg. Only the strategy
   // book asks for it; the all-positions page stays on the cheap snapshot.
@@ -144,10 +155,8 @@ export async function getLivePositions(
           ORDER BY f.ts, f.fill_id
         ) AS running_qty
       FROM open_pos op
-      JOIN trading_sessions sess
-        ON sess.strategy_name = op.strategy_name
       JOIN fills f
-        ON f.session_id = sess.session_id
+        ON f.session_id = op.session_id
        AND f.venue = op.venue
        AND f.symbol = op.symbol
     ),
@@ -171,12 +180,51 @@ export async function getLivePositions(
       WHERE ABS(prev_qty) < 1e-8
          OR prev_qty * running_qty < 0
       ORDER BY state_key, ts DESC
+    ),
+    leg_fees AS (
+      SELECT
+        op.state_key,
+        COALESCE(SUM(f.fee), 0) AS leg_fee
+      FROM open_pos op
+      INNER JOIN opened od ON od.state_key = op.state_key
+      JOIN fills f
+        ON f.session_id = op.session_id
+       AND f.venue = op.venue
+       AND f.symbol = op.symbol
+       AND f.ts >= od.opened_at
+      GROUP BY op.state_key
     )
     SELECT
-      op.*,
+      op.state_key,
+      op.updated_at,
+      op.session_id,
+      op.strategy_name,
+      op.venue,
+      op.symbol,
+      op.position_qty,
+      op.avg_entry_price,
+      op.mark_price,
+      op.unrealized_pnl,
+      op.realized_pnl,
+      op.leverage,
+      op.equity,
+      op.notional,
+      op.side,
+      op.liquidation_price,
+      op.margin,
+      op.funding_accrued,
+      op.funding_rate,
+      op.cumulative_fee,
+      op.cumulative_open_fee,
+      op.cumulative_close_fee,
+      op.last_trade_fee,
+      op.last_trade_ts,
+      COALESCE(lf.leg_fee, 0) AS total_fee,
+      op.unrealized_pnl - COALESCE(lf.leg_fee, 0) + COALESCE(op.funding_accrued, 0) AS adjusted_pnl,
       od.opened_at
     FROM open_pos op
     LEFT JOIN opened od ON od.state_key = op.state_key
+    LEFT JOIN leg_fees lf ON lf.state_key = op.state_key
     ORDER BY ABS(op.unrealized_pnl) DESC
   `;
 
@@ -217,7 +265,12 @@ export async function getPositionSummary(
           ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))
         ) AS notional,
         unrealized_pnl,
-        COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) AS fees,
+        (
+          SELECT COALESCE(SUM(f.fee), 0)
+          FROM fills f
+          WHERE f.session_id = trading_state.session_id
+            AND f.symbol = trading_state.symbol
+        ) AS fees,
         COALESCE(funding_accrued, 0) AS funding_accrued,
         margin
       FROM trading_state
