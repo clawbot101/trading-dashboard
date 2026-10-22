@@ -273,7 +273,7 @@ export default function OverviewPage() {
                 <th className="pb-2 text-right font-normal">Capital → Equity</th>
                 <th
                   className="pb-2 text-right font-normal"
-                  title="Realized since inception vs open legs (mark, fees, funding)"
+                  title="Realized: fees, funding, closed/changed positions since start. Open: exchange unrealized on open positions."
                 >
                   Realized / Open
                 </th>

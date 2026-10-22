@@ -9,10 +9,22 @@
  *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
  * - Strategy Realized / Open: Total = wallet equity change since first snapshot;
- *   Open = sum of open legs (mark − fees + funding); Realized = Total − Open.
+ *   Open = sum of exchange unrealized_pnl on open positions; Realized = fees,
+ *   funding, and closed/changed legs = Total − (Open − Open at first snapshot).
  */
 
 import { query, queryOne } from '../db';
+
+function sumOpenUnrealizedPnl(alias = 'ts'): string {
+  return `
+    COALESCE(SUM(
+      CASE
+        WHEN ${alias}.position_qty != 0 THEN COALESCE(${alias}.unrealized_pnl, 0)
+        ELSE 0
+      END
+    ), 0)
+  `;
+}
 
 function sumOpenAdjustedPnl(alias = 'ts'): string {
   return `
@@ -425,7 +437,7 @@ export async function getOverviewStats(
     queryOne<any>(
       `
         SELECT
-          COALESCE(SUM(ts.unrealized_pnl), 0) AS total_unrealized_pnl,
+          ${sumOpenUnrealizedPnl('ts')} AS total_unrealized_pnl,
           ${sumOpenAdjustedPnl('ts')} AS open_adjusted_pnl,
           COALESCE(SUM(ts.margin), 0) AS total_margin,
           COUNT(*) FILTER (WHERE ts.position_qty != 0) AS open_positions,
@@ -499,7 +511,6 @@ export async function getOverviewStats(
   const initialUnrealized = Number(firstRow?.initial_unrealized_pnl ?? 0);
   const inceptionTs = firstRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
   const stateUnrealized = Number(stateRow?.total_unrealized_pnl ?? 0);
-  const stateOpenAdjusted = Number(stateRow?.open_adjusted_pnl ?? 0);
   const stateRealized = Number(stateRealizedRow?.realized_pnl ?? 0);
   const baselineSnapshotCount = Number(equityRow?.baseline_snapshot_count ?? 0);
 
@@ -517,13 +528,11 @@ export async function getOverviewStats(
   }
 
   const unrealizedPnl =
-    Math.abs(stateOpenAdjusted) > 1e-9
-      ? stateOpenAdjusted
-      : Math.abs(stateUnrealized) > 1e-9
-        ? stateUnrealized
-        : Math.abs(lifecycleUnrealized) > 1e-9
-          ? lifecycleUnrealized
-          : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
+    Math.abs(stateUnrealized) > 1e-9
+      ? stateUnrealized
+      : Math.abs(lifecycleUnrealized) > 1e-9
+        ? lifecycleUnrealized
+        : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
 
   const historyStartsInsideWindow =
     timeRange !== 'ALL' &&
@@ -553,15 +562,12 @@ export async function getOverviewStats(
   const unrealizedPeriod = unrealizedPnl - unrealizedAtStart;
   const realizedPnl = pnlPeriod - unrealizedPeriod;
   const contributedCapital = initialEquity + Number(cashFlowInception ?? 0);
-  const openFromState =
-    Math.abs(stateOpenAdjusted) > 1e-9
-      ? stateOpenAdjusted
-      : Math.abs(stateUnrealized) > 1e-9
-        ? stateUnrealized
-        : unrealizedPnl;
+  const openNow =
+    Math.abs(stateUnrealized) > 1e-9 ? stateUnrealized : unrealizedPnl;
+  const openAtStart = Number(firstRow?.initial_unrealized_pnl ?? 0);
   const inceptionPnl = equityNow - contributedCapital;
-  const inceptionRealizedPnl = inceptionPnl - openFromState;
-  const unrealizedForDisplay = openFromState;
+  const inceptionRealizedPnl = inceptionPnl - (openNow - openAtStart);
+  const unrealizedForDisplay = openNow;
 
   return {
     total_equity: equityNow,
@@ -1315,7 +1321,7 @@ export async function getStrategyLeaderboard(
         SELECT
           ts.strategy_name,
           COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) AS notional,
-          COALESCE(SUM(ts.unrealized_pnl), 0) AS unrealized_pnl,
+          ${sumOpenUnrealizedPnl('ts')} AS unrealized_pnl,
           ${sumOpenAdjustedPnl('ts')} AS open_adjusted_pnl
         FROM trading_state ts
         WHERE ts.strategy_name <> ALL($${eqFilters.params.length + 3}::text[])
@@ -1380,14 +1386,11 @@ export async function getStrategyLeaderboard(
         [r.strategy_name]
       );
       const contributedCapital = initialEquity + inceptionCashFlow;
-      const openAdjustedPnl = Number(r.open_adjusted_pnl) || 0;
-      const rawUnrealizedPnl = Number(r.unrealized_pnl) || 0;
-      const openPnl =
-        Math.abs(openAdjustedPnl) > 1e-9 ? openAdjustedPnl : rawUnrealizedPnl;
-      // Wallet PnL since first snapshot; Open = live legs (mark − fees + funding).
+      const openPnl = Number(r.unrealized_pnl) || 0;
+      const openAtStart = Number(r.initial_unrealized_pnl) || 0;
       const walletInceptionPnl = latestEquity - contributedCapital;
       const inceptionPnl = walletInceptionPnl;
-      const inceptionRealizedPnl = walletInceptionPnl - openPnl;
+      const inceptionRealizedPnl = walletInceptionPnl - (openPnl - openAtStart);
       const inceptionReturnRate =
         contributedCapital > 0 ? walletInceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
