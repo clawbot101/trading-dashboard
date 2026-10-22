@@ -237,9 +237,14 @@ export default function OverviewPage() {
       </div>
 
       {/* Error state */}
-      {(statsError || coarseError) && (
+      {(statsError || coarseError) && !sharedData?.data?.strategyLeaderboard?.length && (
         <div className="mb-4 p-3 bg-hl-loss/20 border border-hl-loss rounded text-hl-loss">
           Connection error. Retrying...
+        </div>
+      )}
+      {(statsError || coarseError) && sharedData?.data?.strategyLeaderboard?.length > 0 && (
+        <div className="mb-4 p-3 bg-hl-panel border border-hl-border rounded text-hl-secondary text-sm">
+          Chart or summary is slow to load (database busy). Strategy table below should still update.
         </div>
       )}
 

@@ -15,12 +15,16 @@ function createPool() {
   url.searchParams.delete('sslmode'); // Remove sslmode from URL
   const cleanConnectionString = url.toString();
 
+  // Serverless opens many instances; keep one connection each so we don't exhaust
+  // Timescale's slot limit (overview already runs several queries per request).
+  const isServerless = Boolean(process.env.VERCEL);
   return new Pool({
     connectionString: cleanConnectionString,
     ssl: { rejectUnauthorized: false },
-    max: 10,
-    idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 10_000,
+    max: isServerless ? 1 : 5,
+    idleTimeoutMillis: isServerless ? 5_000 : 30_000,
+    connectionTimeoutMillis: 15_000,
+    allowExitOnIdle: isServerless,
   });
 }
 
