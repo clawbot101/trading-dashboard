@@ -54,6 +54,20 @@ export async function getLivePositions(
   venue?: string,
   strategy?: string
 ): Promise<LivePosition[]> {
+  const params: unknown[] = [[...HIDDEN_STRATEGIES]];
+  const filters = [
+    'position_qty != 0',
+    'strategy_name <> ALL($1::text[])',
+  ];
+  if (strategy) {
+    params.push(strategy);
+    filters.push(`strategy_name = $${params.length}`);
+  }
+  if (venue) {
+    params.push(venue);
+    filters.push(`venue = $${params.length}`);
+  }
+
   const sql = `
     SELECT 
       state_key,
@@ -87,12 +101,11 @@ export async function getLivePositions(
       COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) as total_fee,
       unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0) as adjusted_pnl
     FROM trading_state
-    WHERE position_qty != 0
-      AND strategy_name <> ALL($1::text[])
+    WHERE ${filters.join('\n      AND ')}
     ORDER BY ABS(unrealized_pnl) DESC
   `;
 
-  return query<LivePosition>(sql, [[...HIDDEN_STRATEGIES]]);
+  return query<LivePosition>(sql, params);
 }
 
 /**
@@ -104,6 +117,20 @@ export async function getPositionSummary(
 ): Promise<PositionSummary | null> {
   // Gross leverage = gross notional / wallet equity (latest equity per account).
   // Do NOT average the leverage *settings* (10x/25x) — that produced ~11x junk.
+  const params: unknown[] = [[...HIDDEN_STRATEGIES]];
+  const filters = [
+    'position_qty != 0',
+    'strategy_name <> ALL($1::text[])',
+  ];
+  if (strategy) {
+    params.push(strategy);
+    filters.push(`strategy_name = $${params.length}`);
+  }
+  if (venue) {
+    params.push(venue);
+    filters.push(`venue = $${params.length}`);
+  }
+
   const sql = `
     WITH open_pos AS (
       SELECT
@@ -118,8 +145,7 @@ export async function getPositionSummary(
         COALESCE(funding_accrued, 0) AS funding_accrued,
         margin
       FROM trading_state
-      WHERE position_qty != 0
-        AND strategy_name <> ALL($1::text[])
+      WHERE ${filters.join('\n        AND ')}
     ),
     open_accounts AS (
       SELECT DISTINCT account_id FROM open_pos
@@ -158,7 +184,7 @@ export async function getPositionSummary(
     FROM open_pos
   `;
 
-  return queryOne<PositionSummary>(sql, [[...HIDDEN_STRATEGIES]]);
+  return queryOne<PositionSummary>(sql, params);
 }
 
 /**

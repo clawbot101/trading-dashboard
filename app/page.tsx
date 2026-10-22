@@ -1,7 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, Fragment } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
 import { buildPnlCurve, alignCashFlowsToEquityCatchUp } from '../lib/pnlCurve';
@@ -102,6 +102,22 @@ export default function OverviewPage() {
   const strategies = sharedData?.data?.strategyLeaderboard ?? EMPTY_LIST;
   const venueSplit = sharedData?.data?.venueSplit ?? EMPTY_LIST;
   const asOf = curvePayload?.as_of_ts ?? statsPayload?.as_of_ts;
+
+  const positionsKey =
+    selectedStrategy === 'all'
+      ? null
+      : `/api/positions?strategy=${encodeURIComponent(selectedStrategy)}`;
+  const { data: positionsPayload, error: positionsError } = useSWR(
+    positionsKey,
+    fetcher,
+    {
+      refreshInterval: paused ? 0 : 15000,
+      dedupingInterval: 5000,
+    }
+  );
+  const bookReady = positionsPayload?.query?.strategy === selectedStrategy;
+  const bookPositions = bookReady ? positionsPayload?.data?.positions ?? EMPTY_LIST : EMPTY_LIST;
+  const bookLoading = selectedStrategy !== 'all' && !bookReady && !positionsError;
 
   const { data: activityData, isLoading: isActivityLoading } = useSWR(
     `/api/recent-activity?tab=all&page=${activityPage}&pageSize=10`,
@@ -242,7 +258,7 @@ export default function OverviewPage() {
         <div className="flex items-baseline justify-between mb-3">
           <div className="text-xs text-hl-secondary">Strategy Performance</div>
           <div className="text-[10px] text-hl-muted">
-            Click a row to filter · click again to clear
+            Click a row to see its positions · click again to clear
           </div>
         </div>
         {strategies.length > 0 ? (
@@ -304,18 +320,19 @@ export default function OverviewPage() {
               </tr>
               {strategies.slice(0, 5).map((s: any) => {
                 const tail = walletTail(s.account_id);
+                const open = selectedStrategy === s.strategy_name;
                 return (
+                <Fragment key={s.strategy_name}>
                 <tr
-                  key={s.strategy_name}
                   onClick={() =>
                     setSelectedStrategy((prev) =>
                       prev === s.strategy_name ? 'all' : s.strategy_name
                     )
                   }
-                  className={`cursor-pointer border-b border-hl-border/40 transition last:border-0 ${
-                    selectedStrategy === s.strategy_name
+                  className={`cursor-pointer transition ${
+                    open
                       ? 'bg-hl-accent/10'
-                      : 'hover:bg-hl-hover'
+                      : 'border-b border-hl-border/40 hover:bg-hl-hover last:border-0'
                   }`}
                 >
                   <td
@@ -354,6 +371,18 @@ export default function OverviewPage() {
                     <span className="text-xs">({formatPct(s.inception_return_pct)})</span>
                   </td>
                 </tr>
+                {open && (
+                  <tr className="border-b border-hl-border/40 bg-hl-accent/5">
+                    <td colSpan={4} className="px-3 pb-3 pt-0">
+                      <StrategyBook
+                        positions={bookPositions}
+                        loading={bookLoading}
+                        error={Boolean(positionsError)}
+                      />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
                 );
               })}
             </tbody>
@@ -603,6 +632,107 @@ function normalizeEquityCurve(points: any[]) {
   return Array.from(map.values()).sort(
     (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
   );
+}
+
+function StrategyBook({
+  positions,
+  loading,
+  error,
+}: {
+  positions: any[];
+  loading: boolean;
+  error: boolean;
+}) {
+  if (error) {
+    return <div className="py-2 text-xs text-hl-loss">Couldn't load positions.</div>;
+  }
+  if (loading) {
+    return <div className="py-2 text-xs text-hl-muted">Loading positions...</div>;
+  }
+  if (positions.length === 0) {
+    return <div className="py-2 text-xs text-hl-muted">Flat — no open position</div>;
+  }
+
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-[10px] uppercase tracking-wide text-hl-muted">
+          <th className="w-16 pb-1 text-left font-normal">Side</th>
+          <th className="pb-1 text-left font-normal">Symbol</th>
+          <th className="pb-1 text-right font-normal">Size</th>
+          <th className="pb-1 text-right font-normal">Entry → Mark</th>
+          <th className="w-24 pb-1 text-right font-normal">uPnL</th>
+        </tr>
+      </thead>
+      <tbody>
+        {positions.map((p) => {
+          const move = priceMovePct(p.avg_entry_price, p.mark_price);
+          const upnl = Number(p.unrealized_pnl);
+          const side = String(p.side || '').toUpperCase();
+          return (
+            <tr key={p.state_key ?? `${p.symbol}-${side}`}>
+              <td className="py-1.5">
+                <span
+                  className={
+                    side === 'LONG' ? 'badge-long' : side === 'SHORT' ? 'badge-short' : 'badge-stopped'
+                  }
+                >
+                  {side || '--'}
+                </span>
+              </td>
+              <td className="py-1.5 font-medium">{p.symbol}</td>
+              <td className="py-1.5 text-right font-num text-hl-secondary">
+                {formatSize(p.position_qty)}
+              </td>
+              <td className="py-1.5 text-right font-num">
+                {formatMark(p.avg_entry_price)}
+                <span className="text-hl-muted"> → </span>
+                {formatMark(p.mark_price)}
+                {move != null && (
+                  <span className={move >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>
+                    {' '}
+                    ({formatPct(move)})
+                  </span>
+                )}
+              </td>
+              <td
+                className={`py-1.5 text-right font-num ${
+                  upnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                }`}
+              >
+                {formatPnl(upnl)}
+              </td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+function priceMovePct(entry: number | null | undefined, mark: number | null | undefined) {
+  const e = Number(entry);
+  const m = Number(mark);
+  if (!Number.isFinite(e) || !Number.isFinite(m) || e === 0) return null;
+  return ((m - e) / e) * 100;
+}
+
+function formatSize(n: number | null | undefined) {
+  const abs = Math.abs(Number(n));
+  if (!Number.isFinite(abs)) return '--';
+  if (abs >= 1000) return abs.toLocaleString('en-US', { maximumFractionDigits: 2 });
+  return abs.toLocaleString('en-US', { maximumFractionDigits: 4 });
+}
+
+function formatMark(n: number | null | undefined) {
+  const v = Number(n);
+  if (n == null || !Number.isFinite(v)) return '--';
+  const abs = Math.abs(v);
+  const dp = abs >= 1000 ? 2 : abs >= 1 ? 2 : abs >= 0.01 ? 4 : 6;
+  return v.toLocaleString('en-US', {
+    minimumFractionDigits: dp,
+    maximumFractionDigits: dp,
+  });
 }
 
 // Stat card component
