@@ -8,9 +8,9 @@
  *   from the venue ledger. Equity movement is never guessed to be a cash flow:
  *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
- * - Strategy Realized / Open: Total = wallet equity change since first snapshot;
- *   Open = sum of exchange unrealized_pnl on open positions; Realized = fees,
- *   funding, and closed/changed legs = Total − (Open − Open at first snapshot).
+ * - Strategy Realized / Open (alpha-style): Total = wallet change since first
+ *   snapshot; Open = current unrealized on open positions; Realized = Total − Open
+ *   so Realized + Open = Total (fees, funding, closes netted in Realized).
  */
 
 import { query, queryOne } from '../db';
@@ -564,9 +564,8 @@ export async function getOverviewStats(
   const contributedCapital = initialEquity + Number(cashFlowInception ?? 0);
   const openNow =
     Math.abs(stateUnrealized) > 1e-9 ? stateUnrealized : unrealizedPnl;
-  const openAtStart = Number(firstRow?.initial_unrealized_pnl ?? 0);
   const inceptionPnl = equityNow - contributedCapital;
-  const inceptionRealizedPnl = inceptionPnl - (openNow - openAtStart);
+  const inceptionRealizedPnl = inceptionPnl - openNow;
   const unrealizedForDisplay = openNow;
 
   return {
@@ -1387,10 +1386,9 @@ export async function getStrategyLeaderboard(
       );
       const contributedCapital = initialEquity + inceptionCashFlow;
       const openPnl = Number(r.unrealized_pnl) || 0;
-      const openAtStart = Number(r.initial_unrealized_pnl) || 0;
       const walletInceptionPnl = latestEquity - contributedCapital;
       const inceptionPnl = walletInceptionPnl;
-      const inceptionRealizedPnl = walletInceptionPnl - (openPnl - openAtStart);
+      const inceptionRealizedPnl = walletInceptionPnl - openPnl;
       const inceptionReturnRate =
         contributedCapital > 0 ? walletInceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
