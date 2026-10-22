@@ -8,9 +8,9 @@
  *   from the venue ledger. Equity movement is never guessed to be a cash flow:
  *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
- * - Strategy Realized / Open (alpha-style): Total = wallet change since first
- *   snapshot; Open = current unrealized on open positions; Realized = Total − Open
- *   so Realized + Open = Total (fees, funding, closes netted in Realized).
+ * - Strategy PnL: Total = wallet equity change since first snapshot; Open = current
+ *   unrealized on open positions; Realized = closed-leg PnL plus fees and funding
+ *   on the open book (not Total − Open, which mis-labels mark/base effects as +2).
  */
 
 import { query, queryOne } from '../db';
@@ -565,7 +565,12 @@ export async function getOverviewStats(
   const openNow =
     Math.abs(stateUnrealized) > 1e-9 ? stateUnrealized : unrealizedPnl;
   const inceptionPnl = equityNow - contributedCapital;
-  const inceptionRealizedPnl = inceptionPnl - openNow;
+  const openAdjusted = Number(stateRow?.open_adjusted_pnl ?? 0);
+  const openCashRealized = openAdjusted - openNow;
+  const lifecycleMap = await getLifecyclePnlByStrategy(to_ts, venue, strategies);
+  let closedRealized = 0;
+  for (const v of lifecycleMap.values()) closedRealized += v.realized_pnl;
+  const inceptionRealizedPnl = closedRealized + openCashRealized;
   const unrealizedForDisplay = openNow;
 
   return {
@@ -654,7 +659,15 @@ function lifecyclePnlSql(
   stateWhereExtra: string
 ): string {
   return `
-    WITH fills_with_session AS (
+    WITH strategy_start AS (
+      SELECT
+        COALESCE(strategy_name, 'unknown') AS strategy_name,
+        MIN(started_at) AS started_at
+      FROM trading_sessions
+      WHERE started_at IS NOT NULL
+      GROUP BY COALESCE(strategy_name, 'unknown')
+    ),
+    fills_with_session AS (
       SELECT
         f.fill_id,
         f.ts,
@@ -668,7 +681,10 @@ function lifecyclePnlSql(
         CASE WHEN LOWER(f.side) = 'buy' THEN COALESCE(f.fill_qty, 0) ELSE -COALESCE(f.fill_qty, 0) END AS signed_qty
       FROM fills f
       LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      LEFT JOIN strategy_start ss
+        ON ss.strategy_name = COALESCE(sess.strategy_name, '__unknown__')
       WHERE f.ts <= $1
+        AND (ss.started_at IS NULL OR f.ts >= ss.started_at)
       ${fillWhereSql}
     ),
     fills_with_running AS (
@@ -1368,6 +1384,8 @@ export async function getStrategyLeaderboard(
     [to_ts, from_ts, ...eqFilters.params, [...(await getArchivedStrategies())]]
   );
 
+  const lifecycleByStrategy = await getLifecyclePnlByStrategy(to_ts, venue);
+
   const withPnl = await Promise.all(
     rows.map(async (r) => {
       const firstEquity = Number(r.first_equity) || 0;
@@ -1386,9 +1404,13 @@ export async function getStrategyLeaderboard(
       );
       const contributedCapital = initialEquity + inceptionCashFlow;
       const openPnl = Number(r.unrealized_pnl) || 0;
+      const openAdjusted = Number(r.open_adjusted_pnl) || 0;
+      const openCashRealized = openAdjusted - openPnl;
+      const closedRealized =
+        lifecycleByStrategy.get(r.strategy_name)?.realized_pnl ?? 0;
       const walletInceptionPnl = latestEquity - contributedCapital;
       const inceptionPnl = walletInceptionPnl;
-      const inceptionRealizedPnl = walletInceptionPnl - openPnl;
+      const inceptionRealizedPnl = closedRealized + openCashRealized;
       const inceptionReturnRate =
         contributedCapital > 0 ? walletInceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the

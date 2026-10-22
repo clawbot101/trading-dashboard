@@ -278,7 +278,7 @@ export default function OverviewPage() {
                 <th className="pb-2 text-right font-normal">Capital → Equity</th>
                 <th
                   className="pb-2 text-right font-normal"
-                  title="Realized + Open = Total. Open is current unrealized; Realized is everything else since start (fees, funding, closes)."
+                  title="Total = wallet change since start. Open = current unrealized. Realized = fees, funding, and closed legs (may not equal Total − Open)."
                 >
                   Realized / Open
                 </th>
