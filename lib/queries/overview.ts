@@ -553,14 +553,24 @@ export async function getOverviewStats(
   const unrealizedPeriod = unrealizedPnl - unrealizedAtStart;
   const realizedPnl = pnlPeriod - unrealizedPeriod;
   const contributedCapital = initialEquity + Number(cashFlowInception ?? 0);
-  const inceptionPnl = equityNow - contributedCapital;
-  const inceptionRealizedPnl = inceptionPnl - (unrealizedPnl - initialUnrealized);
+  const lifecycleMap = await getLifecyclePnlByStrategy(to_ts, venue, strategies);
+  let lifecycleRealized = 0;
+  for (const v of lifecycleMap.values()) lifecycleRealized += v.realized_pnl;
+  const openFromState =
+    Math.abs(stateOpenAdjusted) > 1e-9
+      ? stateOpenAdjusted
+      : Math.abs(stateUnrealized) > 1e-9
+        ? stateUnrealized
+        : unrealizedPnl;
+  const inceptionRealizedPnl = lifecycleRealized;
+  const inceptionPnl = lifecycleRealized + openFromState;
+  const unrealizedForDisplay = openFromState;
 
   return {
     total_equity: equityNow,
     pnl_24h: pnlPeriod,
     pnl_24h_pct: pnlPeriodPct,
-    total_unrealized_pnl: unrealizedPnl,
+    total_unrealized_pnl: unrealizedForDisplay,
     unrealized_pnl_period: unrealizedPeriod,
     total_realized_pnl: realizedPnl,
     total_funding: fundingDelta,
@@ -578,12 +588,23 @@ export async function getOverviewStats(
   };
 }
 
-async function getAdjustedPnlSummary(
+type LifecyclePnlRow = {
+  strategy_name: string;
+  realized_pnl: number;
+  open_pnl: number;
+};
+
+function lifecycleFilterParams(
   toTs: string,
   venue?: string,
-  strategies?: string[]
-): Promise<{ realized_pnl: number; unrealized_pnl: number }> {
-  const archived = await getArchivedStrategies();
+  strategies?: string[],
+  archived?: string[]
+): {
+  params: unknown[];
+  fillWhereSql: string;
+  fundingWhereSql: string;
+  stateWhereExtra: string;
+} {
   const params: unknown[] = [toTs];
   let venueParamIdx: number | null = null;
   if (!isAllValue(venue)) {
@@ -596,7 +617,8 @@ async function getAdjustedPnlSummary(
     params.push(strategiesFilter);
     strategiesParamIdx = params.length;
   }
-  params.push([...archived]);
+  const hidden = archived ?? [];
+  params.push([...hidden]);
   const hiddenParamIdx = params.length;
 
   const fillWhereParts: string[] = [];
@@ -616,11 +638,20 @@ async function getAdjustedPnlSummary(
   fundingWhereParts.push(`sess.strategy_name <> ALL($${hiddenParamIdx}::text[])`);
   stateWhereParts.push(`ts.strategy_name <> ALL($${hiddenParamIdx}::text[])`);
 
-  const fillWhereSql = fillWhereParts.length ? `AND ${fillWhereParts.join(' AND ')}` : '';
-  const fundingWhereSql = fundingWhereParts.length ? `AND ${fundingWhereParts.join(' AND ')}` : '';
-  const stateWhereExtra = stateWhereParts.length ? `AND ${stateWhereParts.join(' AND ')}` : '';
+  return {
+    params,
+    fillWhereSql: fillWhereParts.length ? `AND ${fillWhereParts.join(' AND ')}` : '',
+    fundingWhereSql: fundingWhereParts.length ? `AND ${fundingWhereParts.join(' AND ')}` : '',
+    stateWhereExtra: stateWhereParts.length ? `AND ${stateWhereParts.join(' AND ')}` : '',
+  };
+}
 
-  const sql = `
+function lifecyclePnlSql(
+  fillWhereSql: string,
+  fundingWhereSql: string,
+  stateWhereExtra: string
+): string {
+  return `
     WITH fills_with_session AS (
       SELECT
         f.fill_id,
@@ -748,6 +779,7 @@ async function getAdjustedPnlSummary(
     ),
     lifecycle_pnl AS (
       SELECT
+        la.strategy_name,
         CASE WHEN ABS(la.net_qty) < 1e-12 THEN 'CLOSED' ELSE 'OPEN' END AS status,
         (
           CASE
@@ -775,17 +807,55 @@ async function getAdjustedPnlSummary(
        AND ls.venue = la.venue
        AND ls.symbol = la.symbol
     )
-    SELECT
-      COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END), 0) AS realized_pnl,
-      COALESCE(SUM(CASE WHEN status = 'OPEN' THEN net_pnl ELSE 0 END), 0) AS unrealized_pnl
-    FROM lifecycle_pnl
   `;
+}
 
-  const row = await queryOne<{ realized_pnl: number; unrealized_pnl: number }>(sql, params);
-  return {
-    realized_pnl: Number(row?.realized_pnl ?? 0),
-    unrealized_pnl: Number(row?.unrealized_pnl ?? 0),
-  };
+async function getLifecyclePnlByStrategy(
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<Map<string, { realized_pnl: number; open_pnl: number }>> {
+  const archived = await getArchivedStrategies();
+  const { params, fillWhereSql, fundingWhereSql, stateWhereExtra } = lifecycleFilterParams(
+    toTs,
+    venue,
+    strategies,
+    archived
+  );
+  const sql = `
+    ${lifecyclePnlSql(fillWhereSql, fundingWhereSql, stateWhereExtra)}
+    SELECT
+      strategy_name,
+      COALESCE(SUM(CASE WHEN status = 'CLOSED' THEN net_pnl ELSE 0 END), 0) AS realized_pnl,
+      COALESCE(SUM(CASE WHEN status = 'OPEN' THEN net_pnl ELSE 0 END), 0) AS open_pnl
+    FROM lifecycle_pnl
+    WHERE strategy_name <> '__unknown__'
+    GROUP BY strategy_name
+  `;
+  const rows = await query<LifecyclePnlRow>(sql, params);
+  const map = new Map<string, { realized_pnl: number; open_pnl: number }>();
+  for (const row of rows) {
+    map.set(row.strategy_name, {
+      realized_pnl: Number(row.realized_pnl) || 0,
+      open_pnl: Number(row.open_pnl) || 0,
+    });
+  }
+  return map;
+}
+
+async function getAdjustedPnlSummary(
+  toTs: string,
+  venue?: string,
+  strategies?: string[]
+): Promise<{ realized_pnl: number; unrealized_pnl: number }> {
+  const byStrategy = await getLifecyclePnlByStrategy(toTs, venue, strategies);
+  let realized_pnl = 0;
+  let unrealized_pnl = 0;
+  for (const v of byStrategy.values()) {
+    realized_pnl += v.realized_pnl;
+    unrealized_pnl += v.open_pnl;
+  }
+  return { realized_pnl, unrealized_pnl };
 }
 
 type CurvePrefixEntry = {
@@ -1296,6 +1366,8 @@ export async function getStrategyLeaderboard(
     [to_ts, from_ts, ...eqFilters.params, [...(await getArchivedStrategies())]]
   );
 
+  const lifecycleByStrategy = await getLifecyclePnlByStrategy(to_ts, venue);
+
   const withPnl = await Promise.all(
     rows.map(async (r) => {
       const firstEquity = Number(r.first_equity) || 0;
@@ -1313,16 +1385,16 @@ export async function getStrategyLeaderboard(
         [r.strategy_name]
       );
       const contributedCapital = initialEquity + inceptionCashFlow;
-      const inceptionPnl = latestEquity - contributedCapital;
       const openAdjustedPnl = Number(r.open_adjusted_pnl) || 0;
       const rawUnrealizedPnl = Number(r.unrealized_pnl) || 0;
       const openPnl =
         Math.abs(openAdjustedPnl) > 1e-9 ? openAdjustedPnl : rawUnrealizedPnl;
-      const initialUnrealizedPnl = Number(r.initial_unrealized_pnl) || 0;
-      // Closed-leg PnL, fees on flat symbols, and funding not on open legs land here.
-      const inceptionRealizedPnl = inceptionPnl - (openPnl - initialUnrealizedPnl);
+      const lifecycle = lifecycleByStrategy.get(r.strategy_name);
+      const inceptionRealizedPnl = lifecycle?.realized_pnl ?? 0;
+      const tradingPnl = inceptionRealizedPnl + openPnl;
+      const inceptionPnl = tradingPnl;
       const inceptionReturnRate =
-        contributedCapital > 0 ? inceptionPnl / contributedCapital : 0;
+        contributedCapital > 0 ? tradingPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
       // actual return denominator, then annualize the simple return over the
       // exact period for which this strategy has snapshots. Simple annualization
