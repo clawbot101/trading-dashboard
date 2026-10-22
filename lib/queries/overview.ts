@@ -9,8 +9,9 @@
  *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
  * - Strategy PnL: Total = wallet equity change since first snapshot; Open = current
- *   unrealized on open positions; Realized = closed-leg PnL plus fees and funding
- *   on the open book (not Total − Open, which mis-labels mark/base effects as +2).
+ *   exchange unrealized on open positions (trading_state only). Realized prefers
+ *   closed-leg + fee/funding ledger; when that diverges from wallet (alpha flat
+ *   book, or L4 churn), fall back to Total − Open so Realized + Open = Total.
  */
 
 import { query, queryOne } from '../db';
@@ -41,6 +42,22 @@ function sumOpenAdjustedPnl(alias = 'ts'): string {
     ), 0)
   `;
 }
+
+/** Pick Realized so long-running flat books (alpha) and churny handoffs (L2/L4) both reconcile. */
+function reconcileInceptionRealized(
+  walletInceptionPnl: number,
+  openPnl: number,
+  closedRealized: number,
+  openCashRealized: number
+): number {
+  const walletRealized = walletInceptionPnl - openPnl;
+  const eventRealized = closedRealized + openCashRealized;
+  const mismatch = Math.abs(eventRealized - walletRealized);
+  const scale = Math.max(100, Math.abs(walletInceptionPnl) * 0.15);
+  if (mismatch > scale) return walletRealized;
+  return eventRealized;
+}
+
 import { getArchivedStrategies } from '../archived-strategies-store';
 import { cached } from '../cache';
 import {
@@ -562,15 +579,25 @@ export async function getOverviewStats(
   const unrealizedPeriod = unrealizedPnl - unrealizedAtStart;
   const realizedPnl = pnlPeriod - unrealizedPeriod;
   const contributedCapital = initialEquity + Number(cashFlowInception ?? 0);
+  const openPositions = Number(stateRow?.open_positions ?? 0);
   const openNow =
-    Math.abs(stateUnrealized) > 1e-9 ? stateUnrealized : unrealizedPnl;
+    Math.abs(stateUnrealized) > 1e-9
+      ? stateUnrealized
+      : openPositions > 0
+        ? unrealizedPnl
+        : 0;
   const inceptionPnl = equityNow - contributedCapital;
   const openAdjusted = Number(stateRow?.open_adjusted_pnl ?? 0);
   const openCashRealized = openAdjusted - openNow;
   const lifecycleMap = await getLifecyclePnlByStrategy(to_ts, venue, strategies);
   let closedRealized = 0;
   for (const v of lifecycleMap.values()) closedRealized += v.realized_pnl;
-  const inceptionRealizedPnl = closedRealized + openCashRealized;
+  const inceptionRealizedPnl = reconcileInceptionRealized(
+    inceptionPnl,
+    openNow,
+    closedRealized,
+    openCashRealized
+  );
   const unrealizedForDisplay = openNow;
 
   return {
@@ -1410,7 +1437,12 @@ export async function getStrategyLeaderboard(
         lifecycleByStrategy.get(r.strategy_name)?.realized_pnl ?? 0;
       const walletInceptionPnl = latestEquity - contributedCapital;
       const inceptionPnl = walletInceptionPnl;
-      const inceptionRealizedPnl = closedRealized + openCashRealized;
+      const inceptionRealizedPnl = reconcileInceptionRealized(
+        walletInceptionPnl,
+        openPnl,
+        closedRealized,
+        openCashRealized
+      );
       const inceptionReturnRate =
         contributedCapital > 0 ? walletInceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
