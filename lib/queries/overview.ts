@@ -1478,9 +1478,10 @@ export async function getStrategyLeaderboard(
 }
 
 /**
- * Venue split.
+ * Venue split (sum of latest equity per shown strategy — excludes archived).
  */
 export async function getVenueSplit(): Promise<VenueSplitRow[]> {
+  const archived = await getArchivedStrategies();
   const rows = await query<any>(
     `
       WITH equity_by_key AS (
@@ -1491,6 +1492,7 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
           MAX(e.equity) AS equity
         FROM equity_snapshots e
         LEFT JOIN trading_sessions sess ON e.session_id = sess.session_id
+        WHERE COALESCE(sess.strategy_name, 'unknown') <> ALL($1::text[])
         GROUP BY COALESCE(e.venue, 'unknown'), COALESCE(sess.strategy_name, 'unknown'), e.ts
       ),
       keys AS (
@@ -1542,8 +1544,22 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
        AND p.point = 'prior'
       WHERE l.point = 'latest'
       ORDER BY l.venue
-    `
+    `,
+    [[...archived]]
   );
+
+  const shownStrategies = await query<{ strategy_name: string }>(
+    `
+      SELECT DISTINCT COALESCE(strategy_name, 'unknown') AS strategy_name
+      FROM trading_sessions
+      WHERE COALESCE(strategy_name, 'unknown') <> ALL($1::text[])
+        AND account_id IS NOT NULL
+        AND account_id <> ''
+        AND account_id <> 'unknown_account'
+    `,
+    [[...archived]]
+  );
+  const activeStrategyNames = shownStrategies.map((r) => r.strategy_name);
 
   const withPnl = await Promise.all(
     rows.map(async (row) => {
@@ -1552,7 +1568,8 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
       const cashFlow = await getCashFlowDelta(
         row.prior_ts ?? new Date(Date.now() - 86400000).toISOString(),
         row.latest_ts ?? new Date().toISOString(),
-        row.venue
+        row.venue,
+        activeStrategyNames.length ? activeStrategyNames : undefined
       );
       return {
         venue: row.venue,
