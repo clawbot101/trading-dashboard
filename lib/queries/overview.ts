@@ -11,7 +11,7 @@
  */
 
 import { query, queryOne } from '../db';
-import { HIDDEN_STRATEGIES } from '../hidden-strategies';
+import { getArchivedStrategies } from '../archived-strategies-store';
 import { cached } from '../cache';
 import {
   bucketStartMs,
@@ -162,12 +162,13 @@ function normalizeStrategies(strategies?: string[]): string[] | undefined {
   return cleaned.length ? cleaned : undefined;
 }
 
-function buildFilters(
+async function buildFilters(
   startIndex: number,
   options: QueryFilters,
   withSessionJoin: boolean,
   tableAlias: string
-): { clauses: string[]; params: unknown[] } {
+): Promise<{ clauses: string[]; params: unknown[] }> {
+  const archived = await getArchivedStrategies();
   const params: unknown[] = [];
   const clauses: string[] = [];
   let idx = startIndex;
@@ -179,7 +180,7 @@ function buildFilters(
 
   const strategyColumn = withSessionJoin ? 'sess.strategy_name' : `${tableAlias}.strategy_name`;
   clauses.push(`${strategyColumn} <> ALL($${idx++}::text[])`);
-  params.push([...HIDDEN_STRATEGIES]);
+  params.push([...archived]);
 
   const strategies = normalizeStrategies(options.strategies);
   if (withSessionJoin && strategies?.length) {
@@ -244,16 +245,16 @@ export async function getOverviewStats(
 
   // Bound the heavy snapshot scan: latest/baseline only need recent history.
   // First-ever equity is a cheap separate DISTINCT ON query.
-  const eqFiltersRecent = buildFilters(3, options, true, 'e');
+  const eqFiltersRecent = await buildFilters(3, options, true, 'e');
   const recentWhereExtra = eqFiltersRecent.clauses.length
     ? `AND ${eqFiltersRecent.clauses.join(' AND ')}`
     : '';
-  const eqFiltersFirst = buildFilters(1, options, true, 'e');
+  const eqFiltersFirst = await buildFilters(1, options, true, 'e');
   const firstWhere = eqFiltersFirst.clauses.length
     ? `WHERE ${eqFiltersFirst.clauses.join(' AND ')}`
     : '';
 
-  const stateFilters = buildFilters(1, options, false, 'ts');
+  const stateFilters = await buildFilters(1, options, false, 'ts');
   const stateWhereExtra = stateFilters.clauses.length
     ? `AND ${stateFilters.clauses.join(' AND ')}`
     : '';
@@ -274,7 +275,7 @@ export async function getOverviewStats(
       ? getCashFlowDeltaAfterFirstEquity(to_ts, venue, strategies)
       : getCashFlowDelta(from_ts, to_ts, venue, strategies);
 
-  const upnlFilters = buildFilters(2, options, true, 'e');
+  const upnlFilters = await buildFilters(2, options, true, 'e');
   const upnlWhere = upnlFilters.clauses.length
     ? `WHERE ${upnlFilters.clauses.join(' AND ')}`
     : '';
@@ -560,6 +561,7 @@ async function getAdjustedPnlSummary(
   venue?: string,
   strategies?: string[]
 ): Promise<{ realized_pnl: number; unrealized_pnl: number }> {
+  const archived = await getArchivedStrategies();
   const params: unknown[] = [toTs];
   let venueParamIdx: number | null = null;
   if (!isAllValue(venue)) {
@@ -572,7 +574,7 @@ async function getAdjustedPnlSummary(
     params.push(strategiesFilter);
     strategiesParamIdx = params.length;
   }
-  params.push([...HIDDEN_STRATEGIES]);
+  params.push([...archived]);
   const hiddenParamIdx = params.length;
 
   const fillWhereParts: string[] = [];
@@ -920,7 +922,7 @@ async function queryEquityCurveWindow(
   options: QueryFilters,
   stepSeconds: number
 ): Promise<EquityCurvePoint[]> {
-  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqFilters = await buildFilters(3, options, true, 'e');
   const eqAnd = eqFilters.clauses.length ? `AND ${eqFilters.clauses.join(' AND ')}` : '';
   const includePendingCashFlows = await hasCashFlowsTable();
   // When the bot is down, deposits can be written to cash_flows before the next
@@ -1072,7 +1074,7 @@ async function queryEquityCurveWindow(
 }
 
 async function queryLatestEquityCurve(options: QueryFilters): Promise<EquityCurvePoint[]> {
-  const eqFilters = buildFilters(1, options, true, 'e');
+  const eqFilters = await buildFilters(1, options, true, 'e');
   // Fallback for stale data: show the latest points even if outside requested range.
   const latestRows = await query<EquityCurvePoint>(
     `
@@ -1164,7 +1166,7 @@ export async function getStrategyLeaderboard(
 ): Promise<StrategyLeaderboardRow[]> {
   const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue };
-  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqFilters = await buildFilters(3, options, true, 'e');
   const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
 
   const rows = await query<any>(
@@ -1267,7 +1269,7 @@ export async function getStrategyLeaderboard(
       ORDER BY l.total_equity DESC
       LIMIT 10
     `,
-    [to_ts, from_ts, ...eqFilters.params, [...HIDDEN_STRATEGIES]]
+    [to_ts, from_ts, ...eqFilters.params, [...(await getArchivedStrategies())]]
   );
 
   const withPnl = await Promise.all(
@@ -1418,6 +1420,7 @@ export async function getVenueSplit(): Promise<VenueSplitRow[]> {
  * Recent fills.
  */
 export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
+  const archived = await getArchivedStrategies();
   const sql = `
     SELECT 
       f.ts,
@@ -1435,7 +1438,7 @@ export async function getRecentFills(limit = 20): Promise<RecentFill[]> {
     LIMIT $1
   `;
 
-  return query<RecentFill>(sql, [limit, [...HIDDEN_STRATEGIES]]);
+  return query<RecentFill>(sql, [limit, [...archived]]);
 }
 
 /**
@@ -1451,6 +1454,7 @@ export async function getRecentActivityPage(
   lookbackDays = 365,
   rebalanceWindowMinutes = 90
 ): Promise<RecentActivityPage> {
+  const archived = await getArchivedStrategies();
   const safePage = Math.max(1, page);
   const safePageSize = Math.max(1, Math.min(pageSize, 200));
   const offset = (safePage - 1) * safePageSize;
@@ -1488,7 +1492,7 @@ export async function getRecentActivityPage(
           ) AS payload
         FROM fills f
         LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
-        WHERE COALESCE(sess.strategy_name, '') <> ALL('{hip3_xsec_skip_momentum}'::text[])
+        WHERE COALESCE(sess.strategy_name, '') <> ALL($6::text[])
       ),
       rebalance_days AS (
         SELECT generate_series(
@@ -1544,7 +1548,7 @@ export async function getRecentActivityPage(
       ORDER BY ts DESC, (payload->>'strategy_name') ASC NULLS LAST
       LIMIT $4 OFFSET $5
     `,
-    [lookbackDays, rebalanceWindowMinutes, tab, safePageSize, offset]
+    [lookbackDays, rebalanceWindowMinutes, tab, safePageSize, offset, [...archived]]
   );
 
   const countRow = await queryOne<{ total: number }>(
@@ -1552,6 +1556,8 @@ export async function getRecentActivityPage(
       WITH fill_events AS (
         SELECT f.ts AS ts, 'fill'::text AS kind
         FROM fills f
+        LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+        WHERE COALESCE(sess.strategy_name, '') <> ALL($4::text[])
       ),
       rebalance_days AS (
         SELECT generate_series(
@@ -1581,7 +1587,7 @@ export async function getRecentActivityPage(
       FROM combined
       WHERE ${filterSqlCount}
     `,
-    [lookbackDays, rebalanceWindowMinutes, tab]
+    [lookbackDays, rebalanceWindowMinutes, tab, [...archived]]
   );
 
   const total = Number(countRow?.total ?? 0);
@@ -1712,7 +1718,7 @@ export async function getPnlAttribution(
   const { from_ts, to_ts } = timeRangeToTimestamps(timeRange);
   const options: QueryFilters = { venue, strategies };
 
-  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqFilters = await buildFilters(3, options, true, 'e');
   const eqWhere = [...eqFilters.clauses, 'e.ts >= $2', 'e.ts <= $1'];
   const eqWhereSql = `WHERE ${eqWhere.join(' AND ')}`;
   const eqRows = await query<any>(
@@ -1750,7 +1756,7 @@ export async function getPnlAttribution(
     [to_ts, from_ts, ...eqFilters.params]
   );
 
-  const fillsFilters = buildFilters(3, options, true, 'f');
+  const fillsFilters = await buildFilters(3, options, true, 'f');
   const fillsWhere = [...fillsFilters.clauses, 'f.ts >= $2', 'f.ts <= $1'];
   const feesRows = await query<any>(
     `
@@ -1805,7 +1811,7 @@ async function getFundingDelta(
   // summing LAG(payment_amount) over-counted (e.g. alpha ALL showed ~-$22 vs
   // true ~-$1–6). Snapshot accrued deltas stay well-defined.
   const options: QueryFilters = { venue, strategies };
-  const filters = buildFilters(3, options, true, 'e');
+  const filters = await buildFilters(3, options, true, 'e');
   const whereExtra = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
   const row = await queryOne<{ funding_delta: number }>(
@@ -1886,7 +1892,7 @@ async function getCashFlowDeltaAfterFirstEquity(
   strategies?: string[]
 ): Promise<number> {
   const options: QueryFilters = { venue, strategies };
-  const eqFilters = buildFilters(1, options, true, 'e');
+  const eqFilters = await buildFilters(1, options, true, 'e');
   const firstWhere = eqFilters.clauses.length
     ? `WHERE ${eqFilters.clauses.join(' AND ')}`
     : '';
@@ -1966,7 +1972,7 @@ async function getDetectedEquityJumpFlowEvents(
   toTs: string,
   options: QueryFilters
 ): Promise<CashFlowEvent[]> {
-  const eqFilters = buildFilters(3, options, true, 'e');
+  const eqFilters = await buildFilters(3, options, true, 'e');
 
   return query<CashFlowEvent>(
     `
@@ -2083,7 +2089,7 @@ async function getRealCashFlowEvents(
   options: QueryFilters
 ): Promise<CashFlowEvent[]> {
   if (!(await hasCashFlowsTable())) return [];
-  const filters = buildFilters(3, options, true, 'cf');
+  const filters = await buildFilters(3, options, true, 'cf');
   const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
   return query<CashFlowEvent>(
@@ -2113,7 +2119,7 @@ async function getRealCashFlowDelta(
   options: QueryFilters
 ): Promise<number> {
   if (!(await hasCashFlowsTable())) return 0;
-  const filters = buildFilters(3, options, true, 'cf');
+  const filters = await buildFilters(3, options, true, 'cf');
   const whereSql = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
   const row = await queryOne<{ net_cash_flow: number }>(
@@ -2165,7 +2171,7 @@ async function getStrategyInceptionFlowEvents(
 async function queryStrategyInceptionFlowEvents(
   options: QueryFilters
 ): Promise<CashFlowEvent[]> {
-  const eqFilters = buildFilters(1, options, true, 'e');
+  const eqFilters = await buildFilters(1, options, true, 'e');
   const eqWhere = eqFilters.clauses.length ? `WHERE ${eqFilters.clauses.join(' AND ')}` : '';
 
   // First snapshot per session via the session index, not a group-by over every
@@ -2220,7 +2226,7 @@ async function getFundingDeltasByDay(
 ): Promise<Array<{ date: string; daily_funding_delta: number }>> {
   // Same source as getFundingDelta: snapshot funding_accrued, not polluted funding_payments.
   const options: QueryFilters = { venue, strategies };
-  const filters = buildFilters(3, options, true, 'e');
+  const filters = await buildFilters(3, options, true, 'e');
   const whereExtra = filters.clauses.length ? `AND ${filters.clauses.join(' AND ')}` : '';
 
   return query<{ date: string; daily_funding_delta: number }>(

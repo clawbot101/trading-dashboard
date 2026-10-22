@@ -321,6 +321,10 @@ function PositionRow({
                 <div className="text-xs text-hl-secondary mb-2">Position Details</div>
                 <div className="space-y-1 text-sm">
                   <div className="flex justify-between">
+                    <span className="text-hl-muted">Qty</span>
+                    <span className="font-num">{formatQty(Math.abs(position.position_qty))}</span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-hl-muted">Notional</span>
                     <span className="font-num">{formatUsd(position.notional)}</span>
                   </div>

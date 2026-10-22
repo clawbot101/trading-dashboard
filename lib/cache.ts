@@ -53,3 +53,8 @@ export async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>
   inflight.set(key, run);
   return run;
 }
+
+export function clearResponseCache(): void {
+  store.clear();
+  inflight.clear();
+}

@@ -4,6 +4,7 @@ import useSWR from 'swr';
 import { useState, useMemo, useEffect, Fragment } from 'react';
 import EquityChart from '../components/EquityChart';
 import PnlChart from '../components/PnlChart';
+import ArchivedStrategiesPanel from '../components/ArchivedStrategiesPanel';
 import { buildPnlCurve, alignCashFlowsToEquityCatchUp } from '../lib/pnlCurve';
 import { walletTail } from '../lib/format';
 
@@ -255,10 +256,13 @@ export default function OverviewPage() {
 
       {/* Strategy performance table */}
       <div className="panel p-4 mb-6">
-        <div className="flex items-baseline justify-between mb-3">
+        <div className="flex items-baseline justify-between mb-3 gap-3 flex-wrap">
           <div className="text-xs text-hl-secondary">Strategy Performance</div>
-          <div className="text-[10px] text-hl-muted">
-            Click a row to see its positions · click again to clear
+          <div className="flex items-center gap-3 flex-wrap">
+            <ArchivedStrategiesPanel />
+            <div className="text-[10px] text-hl-muted">
+              Click a row to see its positions · click again to clear
+            </div>
           </div>
         </div>
         {strategies.length > 0 ? (
@@ -659,7 +663,8 @@ function StrategyBook({
         <tr className="text-[10px] uppercase tracking-wide text-hl-muted">
           <th className="w-16 pb-1 text-left font-normal">Side</th>
           <th className="pb-1 text-left font-normal">Symbol</th>
-          <th className="pb-1 text-right font-normal">Size</th>
+          <th className="pb-1 text-right font-normal">Qty</th>
+          <th className="pb-1 text-right font-normal">Notional</th>
           <th className="pb-1 text-right font-normal">Entry → Mark</th>
           <th className="w-20 pb-1 text-right font-normal">Held</th>
           <th className="w-24 pb-1 text-right font-normal">Funding</th>
@@ -687,6 +692,14 @@ function StrategyBook({
               <td className="py-1.5 font-medium">{p.symbol}</td>
               <td className="py-1.5 text-right font-num text-hl-secondary">
                 {formatSize(p.position_qty)}
+              </td>
+              <td className="py-1.5 text-right font-num text-hl-secondary">
+                {formatUsd(
+                  Number.isFinite(Number(p.notional))
+                    ? Number(p.notional)
+                    : Math.abs(Number(p.position_qty)) *
+                        Number(p.mark_price ?? p.avg_entry_price ?? 0)
+                )}
               </td>
               <td className="py-1.5 text-right font-num">
                 {formatMark(p.avg_entry_price)}

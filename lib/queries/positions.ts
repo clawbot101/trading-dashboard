@@ -4,7 +4,7 @@
  */
 
 import { query, queryOne, db } from '../db';
-import { HIDDEN_STRATEGIES } from '../hidden-strategies';
+import { getArchivedStrategies } from '../archived-strategies-store';
 
 export interface LivePosition {
   state_key: string;
@@ -56,7 +56,8 @@ export async function getLivePositions(
   venue?: string,
   strategy?: string
 ): Promise<LivePosition[]> {
-  const params: unknown[] = [[...HIDDEN_STRATEGIES]];
+  const archived = await getArchivedStrategies();
+  const params: unknown[] = [[...archived]];
   const filters = [
     'position_qty != 0',
     'strategy_name <> ALL($1::text[])',
@@ -191,7 +192,8 @@ export async function getPositionSummary(
 ): Promise<PositionSummary | null> {
   // Gross leverage = gross notional / wallet equity (latest equity per account).
   // Do NOT average the leverage *settings* (10x/25x) — that produced ~11x junk.
-  const params: unknown[] = [[...HIDDEN_STRATEGIES]];
+  const archived = await getArchivedStrategies();
+  const params: unknown[] = [[...archived]];
   const filters = [
     'position_qty != 0',
     'strategy_name <> ALL($1::text[])',

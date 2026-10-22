@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { query } from '../../../lib/db';
-import { HIDDEN_STRATEGIES } from '../../../lib/hidden-strategies';
+import { getArchivedStrategies } from '../../../lib/archived-strategies-store';
 
 // Strategy Live Overview - aggregated by strategy instance
 interface StrategyOverview {
@@ -19,6 +19,7 @@ interface StrategyOverview {
 
 export async function GET() {
   try {
+    const archived = await getArchivedStrategies();
     // Aggregate trading_state by strategy instance, join with sessions for status and session_id
     const strategies = await query<StrategyOverview>(
       `SELECT 
@@ -43,7 +44,7 @@ export async function GET() {
        WHERE ts.strategy_name <> ALL($1::text[])
        GROUP BY ts.strategy_name, ts.strategy_slot, ts.venue, ts.account_id, sess.session_id, sess.status
        ORDER BY ts.strategy_name, ts.strategy_slot`,
-      [[...HIDDEN_STRATEGIES]]
+      [[...archived]]
     );
     return NextResponse.json({ strategies, ok: true });
   } catch (err) {
