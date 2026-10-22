@@ -8,9 +8,27 @@
  *   from the venue ledger. Equity movement is never guessed to be a cash flow:
  *   open-position mark-to-market moves equity too.
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
+ * - Open PnL on the strategy table matches the position book: mark-to-market
+ *   minus leg fees plus funding_accrued on still-open positions.
  */
 
 import { query, queryOne } from '../db';
+
+function sumOpenAdjustedPnl(alias = 'ts'): string {
+  return `
+    COALESCE(SUM(
+      CASE
+        WHEN ${alias}.position_qty != 0 THEN (
+          ${alias}.unrealized_pnl
+          - COALESCE(${alias}.cumulative_open_fee, 0)
+          - COALESCE(${alias}.cumulative_close_fee, 0)
+          + COALESCE(${alias}.funding_accrued, 0)
+        )
+        ELSE 0
+      END
+    ), 0)
+  `;
+}
 import { getArchivedStrategies } from '../archived-strategies-store';
 import { cached } from '../cache';
 import {
@@ -408,6 +426,7 @@ export async function getOverviewStats(
       `
         SELECT
           COALESCE(SUM(ts.unrealized_pnl), 0) AS total_unrealized_pnl,
+          ${sumOpenAdjustedPnl('ts')} AS open_adjusted_pnl,
           COALESCE(SUM(ts.margin), 0) AS total_margin,
           COUNT(*) FILTER (WHERE ts.position_qty != 0) AS open_positions,
           COALESCE(
@@ -480,6 +499,7 @@ export async function getOverviewStats(
   const initialUnrealized = Number(firstRow?.initial_unrealized_pnl ?? 0);
   const inceptionTs = firstRow?.initial_equity_ts ?? '2000-01-01T00:00:00Z';
   const stateUnrealized = Number(stateRow?.total_unrealized_pnl ?? 0);
+  const stateOpenAdjusted = Number(stateRow?.open_adjusted_pnl ?? 0);
   const stateRealized = Number(stateRealizedRow?.realized_pnl ?? 0);
   const baselineSnapshotCount = Number(equityRow?.baseline_snapshot_count ?? 0);
 
@@ -497,11 +517,13 @@ export async function getOverviewStats(
   }
 
   const unrealizedPnl =
-    Math.abs(stateUnrealized) > 1e-9
-      ? stateUnrealized
-      : Math.abs(lifecycleUnrealized) > 1e-9
-        ? lifecycleUnrealized
-        : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
+    Math.abs(stateOpenAdjusted) > 1e-9
+      ? stateOpenAdjusted
+      : Math.abs(stateUnrealized) > 1e-9
+        ? stateUnrealized
+        : Math.abs(lifecycleUnrealized) > 1e-9
+          ? lifecycleUnrealized
+          : equityNow - initialEquity - cashFlowSinceInitial - Number(adjustedPnl.realized_pnl ?? 0);
 
   const historyStartsInsideWindow =
     timeRange !== 'ALL' &&
@@ -1226,7 +1248,8 @@ export async function getStrategyLeaderboard(
         SELECT
           ts.strategy_name,
           COALESCE(SUM(COALESCE(ts.position_notional_usd, ABS(ts.position_qty * COALESCE(ts.mark_price, ts.avg_entry_price, 0)))), 0) AS notional,
-          COALESCE(SUM(ts.unrealized_pnl), 0) AS unrealized_pnl
+          COALESCE(SUM(ts.unrealized_pnl), 0) AS unrealized_pnl,
+          ${sumOpenAdjustedPnl('ts')} AS open_adjusted_pnl
         FROM trading_state ts
         WHERE ts.strategy_name <> ALL($${eqFilters.params.length + 3}::text[])
         GROUP BY ts.strategy_name
@@ -1256,7 +1279,8 @@ export async function getStrategyLeaderboard(
         COALESCE(f.total_unrealized_pnl, 0) AS initial_unrealized_pnl,
         l.total_equity AS latest_equity,
         COALESCE(n.notional, 0) AS notional,
-        COALESCE(n.unrealized_pnl, 0) AS unrealized_pnl
+        COALESCE(n.unrealized_pnl, 0) AS unrealized_pnl,
+        COALESCE(n.open_adjusted_pnl, 0) AS open_adjusted_pnl
       FROM strategy_ts st
       JOIN strategy_equity l
         ON l.strategy_name = st.strategy_name AND l.ts = st.latest_ts
@@ -1290,10 +1314,13 @@ export async function getStrategyLeaderboard(
       );
       const contributedCapital = initialEquity + inceptionCashFlow;
       const inceptionPnl = latestEquity - contributedCapital;
-      const unrealizedPnl = Number(r.unrealized_pnl) || 0;
+      const openAdjustedPnl = Number(r.open_adjusted_pnl) || 0;
+      const rawUnrealizedPnl = Number(r.unrealized_pnl) || 0;
+      const openPnl =
+        Math.abs(openAdjustedPnl) > 1e-9 ? openAdjustedPnl : rawUnrealizedPnl;
       const initialUnrealizedPnl = Number(r.initial_unrealized_pnl) || 0;
-      const inceptionRealizedPnl =
-        inceptionPnl - (unrealizedPnl - initialUnrealizedPnl);
+      // Closed-leg PnL, fees on flat symbols, and funding not on open legs land here.
+      const inceptionRealizedPnl = inceptionPnl - (openPnl - initialUnrealizedPnl);
       const inceptionReturnRate =
         contributedCapital > 0 ? inceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
@@ -1318,7 +1345,7 @@ export async function getStrategyLeaderboard(
         notional: Number(r.notional) || 0,
         inception_pnl: inceptionPnl,
         inception_realized_pnl: inceptionRealizedPnl,
-        unrealized_pnl: unrealizedPnl,
+        unrealized_pnl: openPnl,
         contributed_capital: contributedCapital,
         inception_return_pct: inceptionReturnRate * 100,
       };

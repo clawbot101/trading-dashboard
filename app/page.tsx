@@ -271,7 +271,12 @@ export default function OverviewPage() {
               <tr className="border-b border-hl-border text-[10px] uppercase tracking-wide text-hl-muted">
                 <th className="w-44 pb-2 text-left font-normal">Strategy</th>
                 <th className="pb-2 text-right font-normal">Capital → Equity</th>
-                <th className="pb-2 text-right font-normal">Realized / Open</th>
+                <th
+                  className="pb-2 text-right font-normal"
+                  title="Realized since inception vs open legs (mark, fees, funding)"
+                >
+                  Realized / Open
+                </th>
                 <th className="pb-2 text-right font-normal">Total PnL (Since Inception)</th>
               </tr>
             </thead>
