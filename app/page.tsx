@@ -265,12 +265,6 @@ export default function OverviewPage() {
           <div className="text-xs text-hl-secondary">Strategy Performance</div>
           <div className="flex items-center gap-3 flex-wrap">
             <ArchivedStrategiesPanel />
-            <a
-              href="/pnl"
-              className="text-[10px] text-hl-accent hover:underline"
-            >
-              Realized ledger →
-            </a>
             <div className="text-[10px] text-hl-muted">
               Click a row to see its positions · click again to clear
             </div>
