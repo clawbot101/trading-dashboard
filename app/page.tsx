@@ -661,6 +661,8 @@ function StrategyBook({
           <th className="pb-1 text-left font-normal">Symbol</th>
           <th className="pb-1 text-right font-normal">Size</th>
           <th className="pb-1 text-right font-normal">Entry → Mark</th>
+          <th className="w-20 pb-1 text-right font-normal">Held</th>
+          <th className="w-24 pb-1 text-right font-normal">Funding</th>
           <th className="w-24 pb-1 text-right font-normal">uPnL</th>
         </tr>
       </thead>
@@ -668,7 +670,9 @@ function StrategyBook({
         {positions.map((p) => {
           const move = priceMovePct(p.avg_entry_price, p.mark_price);
           const upnl = Number(p.unrealized_pnl);
+          const funding = p.funding_accrued == null ? null : Number(p.funding_accrued);
           const side = String(p.side || '').toUpperCase();
+          const held = formatHeld(p.opened_at);
           return (
             <tr key={p.state_key ?? `${p.symbol}-${side}`}>
               <td className="py-1.5">
@@ -696,6 +700,19 @@ function StrategyBook({
                 )}
               </td>
               <td
+                className="py-1.5 text-right font-num text-hl-secondary"
+                title={heldTitle(p.opened_at)}
+              >
+                {held}
+              </td>
+              <td
+                className={`py-1.5 text-right font-num ${
+                  funding == null ? 'text-hl-muted' : funding >= 0 ? 'text-hl-profit' : 'text-hl-loss'
+                }`}
+              >
+                {formatPnl(funding)}
+              </td>
+              <td
                 className={`py-1.5 text-right font-num ${
                   upnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'
                 }`}
@@ -715,6 +732,26 @@ function priceMovePct(entry: number | null | undefined, mark: number | null | un
   const m = Number(mark);
   if (!Number.isFinite(e) || !Number.isFinite(m) || e === 0) return null;
   return ((m - e) / e) * 100;
+}
+
+function formatHeld(openedAt: string | null | undefined) {
+  if (!openedAt) return '--';
+  const ms = Date.now() - new Date(openedAt).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return '--';
+  const mins = Math.floor(ms / 60000);
+  const hours = Math.floor(mins / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${mins % 60}m`;
+  if (mins > 0) return `${mins}m`;
+  return 'now';
+}
+
+function heldTitle(openedAt: string | null | undefined) {
+  if (!openedAt) return 'Open time unknown';
+  const d = new Date(openedAt);
+  if (Number.isNaN(d.getTime())) return 'Open time unknown';
+  return `Opened ${d.toLocaleString()}`;
 }
 
 function formatSize(n: number | null | undefined) {

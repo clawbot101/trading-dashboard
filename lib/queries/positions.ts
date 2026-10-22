@@ -33,6 +33,8 @@ export interface LivePosition {
   last_trade_ts: string | null;
   total_fee: number;
   adjusted_pnl: number;
+  /** Start of the current leg: open from flat, or the fill that flipped side. */
+  opened_at: string | null;
 }
 
 export interface PositionSummary {
@@ -68,41 +70,113 @@ export async function getLivePositions(
     filters.push(`venue = $${params.length}`);
   }
 
+  const whereSql = filters.join('\n      AND ');
+  const positionColumns = `
+        state_key,
+        updated_at,
+        session_id,
+        strategy_name,
+        venue,
+        symbol,
+        position_qty,
+        avg_entry_price,
+        mark_price,
+        unrealized_pnl,
+        realized_pnl,
+        leverage,
+        equity,
+        COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) as notional,
+        CASE 
+          WHEN position_qty > 0 THEN 'LONG'
+          WHEN position_qty < 0 THEN 'SHORT'
+          ELSE 'FLAT'
+        END as side,
+        liquidation_price,
+        margin,
+        funding_accrued,
+        funding_rate,
+        cumulative_fee,
+        cumulative_open_fee,
+        cumulative_close_fee,
+        last_trade_fee,
+        last_trade_ts,
+        COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) as total_fee,
+        unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0) as adjusted_pnl`;
+
+  // Hold time needs the fill that started the current leg. Only the strategy
+  // book asks for it; the all-positions page stays on the cheap snapshot.
+  if (!strategy) {
+    return query<LivePosition>(
+      `
+        SELECT
+          ${positionColumns},
+          NULL::timestamptz AS opened_at
+        FROM trading_state
+        WHERE ${whereSql}
+        ORDER BY ABS(unrealized_pnl) DESC
+      `,
+      params
+    );
+  }
+
+  // opened_at is the fill that started the current leg. A same-side add does
+  // not reset it; a flip or a reopen from flat does.
   const sql = `
-    SELECT 
-      state_key,
-      updated_at,
-      session_id,
-      strategy_name,
-      venue,
-      symbol,
-      position_qty,
-      avg_entry_price,
-      mark_price,
-      unrealized_pnl,
-      realized_pnl,
-      leverage,
-      equity,
-      COALESCE(position_notional_usd, ABS(position_qty * COALESCE(mark_price, avg_entry_price, 0))) as notional,
-      CASE 
-        WHEN position_qty > 0 THEN 'LONG'
-        WHEN position_qty < 0 THEN 'SHORT'
-        ELSE 'FLAT'
-      END as side,
-      liquidation_price,
-      margin,
-      funding_accrued,
-      funding_rate,
-      cumulative_fee,
-      cumulative_open_fee,
-      cumulative_close_fee,
-      last_trade_fee,
-      last_trade_ts,
-      COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0) as total_fee,
-      unrealized_pnl - (COALESCE(cumulative_open_fee, 0) + COALESCE(cumulative_close_fee, 0)) + COALESCE(funding_accrued, 0) as adjusted_pnl
-    FROM trading_state
-    WHERE ${filters.join('\n      AND ')}
-    ORDER BY ABS(unrealized_pnl) DESC
+    WITH open_pos AS (
+      SELECT
+        ${positionColumns}
+      FROM trading_state
+      WHERE ${whereSql}
+    ),
+    leg_fills AS (
+      SELECT
+        op.state_key,
+        f.ts,
+        f.fill_id,
+        SUM(
+          CASE
+            WHEN LOWER(f.side) = 'buy' THEN COALESCE(f.fill_qty, 0)
+            ELSE -COALESCE(f.fill_qty, 0)
+          END
+        ) OVER (
+          PARTITION BY op.state_key
+          ORDER BY f.ts, f.fill_id
+        ) AS running_qty
+      FROM open_pos op
+      JOIN trading_sessions sess
+        ON sess.strategy_name = op.strategy_name
+      JOIN fills f
+        ON f.session_id = sess.session_id
+       AND f.venue = op.venue
+       AND f.symbol = op.symbol
+    ),
+    leg_marks AS (
+      SELECT
+        state_key,
+        ts,
+        fill_id,
+        running_qty,
+        LAG(running_qty, 1, 0) OVER (
+          PARTITION BY state_key
+          ORDER BY ts, fill_id
+        ) AS prev_qty
+      FROM leg_fills
+    ),
+    opened AS (
+      SELECT DISTINCT ON (state_key)
+        state_key,
+        ts AS opened_at
+      FROM leg_marks
+      WHERE ABS(prev_qty) < 1e-8
+         OR prev_qty * running_qty < 0
+      ORDER BY state_key, ts DESC
+    )
+    SELECT
+      op.*,
+      od.opened_at
+    FROM open_pos op
+    LEFT JOIN opened od ON od.state_key = op.state_key
+    ORDER BY ABS(op.unrealized_pnl) DESC
   `;
 
   return query<LivePosition>(sql, params);
