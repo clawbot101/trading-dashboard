@@ -3,6 +3,13 @@
  */
 
 import { query, queryOne } from '../db';
+import { getArchivedStrategies } from '../archived-strategies-store';
+
+function archivedSqlLiteral(names: string[]): string {
+  if (!names.length) return `ARRAY[]::text[]`;
+  const parts = names.map((n) => `'${String(n).replace(/'/g, "''")}'`).join(',');
+  return `ARRAY[${parts}]::text[]`;
+}
 
 export interface FillRow {
   fill_id: string;
@@ -195,13 +202,23 @@ export async function getPositionLifecycles(
   page = 1,
   pageSize = 50
 ): Promise<PositionLifecycleRow[]> {
+  const archived = await getArchivedStrategies();
+  const archivedArr = archivedSqlLiteral([...archived]);
   const offset = (page - 1) * pageSize;
   const venueFilter = venue && venue !== 'all' ? `AND f.venue = '${venue}'` : '';
   const strategyFilter = strategy && strategy !== 'all' ? `AND sess.strategy_name = '${strategy}'` : '';
   const symbolFilter = symbol ? `AND f.symbol = '${symbol}'` : '';
 
   const sql = `
-    WITH fills_with_session AS (
+    WITH strategy_start AS (
+      SELECT
+        COALESCE(strategy_name, 'unknown') AS strategy_name,
+        MIN(started_at) AS started_at
+      FROM trading_sessions
+      WHERE started_at IS NOT NULL
+      GROUP BY COALESCE(strategy_name, 'unknown')
+    ),
+    fills_with_session AS (
       SELECT 
         f.fill_id,
         f.ts,
@@ -216,7 +233,11 @@ export async function getPositionLifecycles(
         CASE WHEN LOWER(f.side) = 'buy' THEN f.fill_qty ELSE -f.fill_qty END as signed_qty
       FROM fills f
       LEFT JOIN trading_sessions sess ON f.session_id = sess.session_id
+      LEFT JOIN strategy_start ss
+        ON ss.strategy_name = COALESCE(sess.strategy_name, '__unknown__')
       WHERE f.ts >= '${from_ts}' AND f.ts <= '${to_ts}'
+        AND COALESCE(sess.strategy_name, '__unknown__') <> ALL(${archivedArr})
+        AND (ss.started_at IS NULL OR f.ts >= ss.started_at)
       ${venueFilter}
       ${strategyFilter}
       ${symbolFilter}
@@ -293,7 +314,7 @@ export async function getPositionLifecycles(
         ts.mark_price,
         ts.unrealized_pnl
       FROM trading_state ts
-      WHERE ts.strategy_name <> ALL('{hip3_xsec_skip_momentum}'::text[])
+      WHERE ts.strategy_name <> ALL(${archivedArr})
       ORDER BY ts.strategy_name, ts.venue, ts.symbol, ts.updated_at DESC
     ),
     funding_deltas AS (

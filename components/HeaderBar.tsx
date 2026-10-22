@@ -29,6 +29,7 @@ export default function HeaderBar() {
         {/* Center: Page Tabs */}
         <div className="flex items-center gap-1">
           <NavLink href="/">Overview</NavLink>
+          <NavLink href="/pnl">Realized PnL</NavLink>
           <NavLink href="/positions">Positions</NavLink>
           <NavLink href="/trades">Trades</NavLink>
         </div>
