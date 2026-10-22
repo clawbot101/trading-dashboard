@@ -25,7 +25,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 /** Snapshots are written every 5 minutes, so a 30s cache costs no real freshness. */
-const CACHE_TTL_MS = 30_000;
+const CACHE_TTL_MS = 120_000;
 
 /**
  * Selectable sections. Only `stats` and `curve` depend on the selected strategy;
@@ -122,7 +122,7 @@ export async function GET(req: NextRequest) {
         headers: {
           // Let the CDN absorb polling from every open tab so the database sees
           // at most one recomputation per window.
-          'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=300',
+          'Cache-Control': 'public, s-maxage=120, stale-while-revalidate=600',
         },
       }
     );

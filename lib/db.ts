@@ -39,9 +39,33 @@ export async function dbHealthcheck() {
   return res.rows[0];
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientDbError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  return code === "53300" || code === "57P03" || code === "08006" || code === "08001";
+}
+
+async function runQuery(sql: string, params?: unknown[]) {
+  const maxAttempts = 4;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await db.query(sql, params || []);
+    } catch (err) {
+      lastErr = err;
+      if (!isTransientDbError(err) || attempt === maxAttempts) throw err;
+      await sleep(500 * attempt);
+    }
+  }
+  throw lastErr;
+}
+
 // Keep old query functions for backwards compatibility
 export async function query<T>(sql: string, params?: unknown[]): Promise<T[]> {
-  const result = await db.query(sql, params || []);
+  const result = await runQuery(sql, params);
   // Convert numeric strings to numbers
   return result.rows.map(row => convertNumerics(row)) as T[];
 }

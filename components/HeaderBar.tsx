@@ -9,8 +9,10 @@ export default function HeaderBar() {
   // header renders on every page, and fetching the whole overview meant each poll
   // recomputed the equity curve, leaderboard and venue split for nothing.
   const { data } = useSWR('/api/overview?range=24h&parts=stats', fetcher, {
-    refreshInterval: 30000, // 30s refresh
-    dedupingInterval: 10000,
+    refreshInterval: 120000,
+    dedupingInterval: 60000,
+    shouldRetryOnError: true,
+    errorRetryCount: 3,
   });
 
   const stats = data?.data?.stats;
