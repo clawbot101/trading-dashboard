@@ -1,6 +1,7 @@
 /**
  * Persist which strategy_name values are archived (hidden from the live dashboard).
- * Vercel: Postgres (dashboard_settings). VM dev: optional JSON beside gp-trading-algo state.
+ * Vercel: optional Postgres row (table must exist; connection is often read-only).
+ * VM dev: JSON beside gp-trading-algo state.
  */
 
 import fs from 'fs/promises';
@@ -49,59 +50,87 @@ function normalize(names: string[]): string[] {
   return out.sort();
 }
 
+function isReadOnlyDbError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  return code === '25006' || code === '42501';
+}
+
+function isMissingTableError(err: unknown): boolean {
+  const code = (err as { code?: string })?.code;
+  return code === '42P01';
+}
+
 let memoryCache: string[] | null = null;
-let tableReady: Promise<void> | null = null;
+let tableEnsureAttempted = false;
 
 export function invalidateArchivedStrategiesCache(): void {
   memoryCache = null;
 }
 
-async function ensureSettingsTable(): Promise<void> {
-  if (!hasDatabase()) return;
-  if (!tableReady) {
-    tableReady = query(`
+/** Best-effort DDL; skipped after first failure (e.g. read-only replica). */
+async function ensureSettingsTable(): Promise<boolean> {
+  if (!hasDatabase() || tableEnsureAttempted) return false;
+  tableEnsureAttempted = true;
+  try {
+    await query(`
       CREATE TABLE IF NOT EXISTS dashboard_settings (
         key text PRIMARY KEY,
         value jsonb NOT NULL,
         updated_at timestamptz NOT NULL DEFAULT now()
       );
-    `).then(() => undefined);
+    `);
+    return true;
+  } catch (err) {
+    if (isReadOnlyDbError(err)) return false;
+    throw err;
   }
-  await tableReady;
 }
 
 async function readDb(): Promise<StoreFile | null> {
   if (!hasDatabase()) return null;
-  await ensureSettingsTable();
-  const row = await queryOne<{ value: { archived?: string[] }; updated_at: string }>(
-    `
-      SELECT value, updated_at::text AS updated_at
-      FROM dashboard_settings
-      WHERE key = $1
-    `,
-    [SETTINGS_KEY]
-  );
-  if (!row?.value || !Array.isArray(row.value.archived)) return null;
-  return {
-    archived: normalize(row.value.archived),
-    updated_at: row.updated_at,
-  };
+  try {
+    const row = await queryOne<{ value: { archived?: string[] }; updated_at: string }>(
+      `
+        SELECT value, updated_at::text AS updated_at
+        FROM dashboard_settings
+        WHERE key = $1
+      `,
+      [SETTINGS_KEY]
+    );
+    if (!row?.value || !Array.isArray(row.value.archived)) return null;
+    return {
+      archived: normalize(row.value.archived),
+      updated_at: row.updated_at,
+    };
+  } catch (err) {
+    if (isMissingTableError(err) || isReadOnlyDbError(err)) return null;
+    throw err;
+  }
 }
 
 async function writeDb(archived: string[]): Promise<StoreFile> {
   await ensureSettingsTable();
   const payload = normalize(archived);
   const updated_at = new Date().toISOString();
-  await query(
-    `
-      INSERT INTO dashboard_settings (key, value, updated_at)
-      VALUES ($1, $2::jsonb, $3::timestamptz)
-      ON CONFLICT (key) DO UPDATE
-      SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
-    `,
-    [SETTINGS_KEY, JSON.stringify({ archived: payload }), updated_at]
-  );
-  return { archived: payload, updated_at };
+  try {
+    await query(
+      `
+        INSERT INTO dashboard_settings (key, value, updated_at)
+        VALUES ($1, $2::jsonb, $3::timestamptz)
+        ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+      `,
+      [SETTINGS_KEY, JSON.stringify({ archived: payload }), updated_at]
+    );
+    return { archived: payload, updated_at };
+  } catch (err) {
+    if (isReadOnlyDbError(err) || isMissingTableError(err)) {
+      throw new Error(
+        'Database is read-only or dashboard_settings is missing. Create the table on the primary DB or use the JSON file on the VM.'
+      );
+    }
+    throw err;
+  }
 }
 
 async function readFile(): Promise<StoreFile | null> {
@@ -143,9 +172,12 @@ export async function getArchivedStrategies(): Promise<string[]> {
 
 export async function setArchivedStrategies(archived: string[]): Promise<StoreFile> {
   const normalized = normalize(archived);
-  const payload = hasDatabase()
-    ? await writeDb(normalized)
-    : await writeFile(normalized);
+  let payload: StoreFile;
+  if (hasDatabase()) {
+    payload = await writeDb(normalized);
+  } else {
+    payload = await writeFile(normalized);
+  }
   if (hasDatabase()) {
     try {
       await writeFile(normalized);
