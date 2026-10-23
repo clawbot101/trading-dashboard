@@ -10,8 +10,7 @@
  * - Funding is treated as cumulative snapshots, so period funding uses deltas.
  * - Strategy PnL: Total = wallet equity change since first snapshot; Open = current
  *   exchange unrealized on open positions (trading_state only). Realized prefers
- *   closed-leg + fee/funding ledger; when that diverges from wallet (alpha flat
- *   book, or L4 churn), fall back to Total − Open so Realized + Open = Total.
+ *   Realized = Total − Open (wallet minus current mark). Realized + Open = Total.
  */
 
 import { query, queryOne } from '../db';
@@ -41,21 +40,6 @@ function sumOpenAdjustedPnl(alias = 'ts'): string {
       END
     ), 0)
   `;
-}
-
-/** Pick Realized so long-running flat books (alpha) and churny handoffs (L2/L4) both reconcile. */
-function reconcileInceptionRealized(
-  walletInceptionPnl: number,
-  openPnl: number,
-  closedRealized: number,
-  openCashRealized: number
-): number {
-  const walletRealized = walletInceptionPnl - openPnl;
-  const eventRealized = closedRealized + openCashRealized;
-  const mismatch = Math.abs(eventRealized - walletRealized);
-  const scale = Math.max(100, Math.abs(walletInceptionPnl) * 0.15);
-  if (mismatch > scale) return walletRealized;
-  return eventRealized;
 }
 
 import { getArchivedStrategies } from '../archived-strategies-store';
@@ -587,17 +571,7 @@ export async function getOverviewStats(
         ? unrealizedPnl
         : 0;
   const inceptionPnl = equityNow - contributedCapital;
-  const openAdjusted = Number(stateRow?.open_adjusted_pnl ?? 0);
-  const openCashRealized = openAdjusted - openNow;
-  const lifecycleMap = await getLifecyclePnlByStrategy(to_ts, venue, strategies);
-  let closedRealized = 0;
-  for (const v of lifecycleMap.values()) closedRealized += v.realized_pnl;
-  const inceptionRealizedPnl = reconcileInceptionRealized(
-    inceptionPnl,
-    openNow,
-    closedRealized,
-    openCashRealized
-  );
+  const inceptionRealizedPnl = inceptionPnl - openNow;
   const unrealizedForDisplay = openNow;
 
   return {
@@ -1411,8 +1385,6 @@ export async function getStrategyLeaderboard(
     [to_ts, from_ts, ...eqFilters.params, [...(await getArchivedStrategies())]]
   );
 
-  const lifecycleByStrategy = await getLifecyclePnlByStrategy(to_ts, venue);
-
   const withPnl = await Promise.all(
     rows.map(async (r) => {
       const firstEquity = Number(r.first_equity) || 0;
@@ -1431,18 +1403,9 @@ export async function getStrategyLeaderboard(
       );
       const contributedCapital = initialEquity + inceptionCashFlow;
       const openPnl = Number(r.unrealized_pnl) || 0;
-      const openAdjusted = Number(r.open_adjusted_pnl) || 0;
-      const openCashRealized = openAdjusted - openPnl;
-      const closedRealized =
-        lifecycleByStrategy.get(r.strategy_name)?.realized_pnl ?? 0;
       const walletInceptionPnl = latestEquity - contributedCapital;
       const inceptionPnl = walletInceptionPnl;
-      const inceptionRealizedPnl = reconcileInceptionRealized(
-        walletInceptionPnl,
-        openPnl,
-        closedRealized,
-        openCashRealized
-      );
+      const inceptionRealizedPnl = walletInceptionPnl - openPnl;
       const inceptionReturnRate =
         contributedCapital > 0 ? walletInceptionPnl / contributedCapital : 0;
       // Deposits increase capital but not profit. Use contributed capital as the
