@@ -117,12 +117,17 @@ function PaperBook({ strategy }: { strategy: string }) {
             ['Net', latest.net],
             ['Funding', latest.funding_pnl],
             ['Gross', latest.gross],
-          ].map(([label, value]) => (
-            <div key={String(label)} className="panel p-3">
-              <div className="text-xs text-hl-secondary">{label}</div>
-              <div className="font-num text-lg">{formatPnl(Number(value))}</div>
-            </div>
-          ))}
+          ].map(([label, value]) => {
+            const signed = label === 'Net' || label === 'Funding';
+            const n = Number(value);
+            const tone = signed ? (n >= 0 ? 'text-hl-profit' : 'text-hl-loss') : '';
+            return (
+              <div key={String(label)} className="panel p-3">
+                <div className="text-xs text-hl-secondary">{label}</div>
+                <div className={`font-num text-lg ${tone}`}>{formatPnl(n)}</div>
+              </div>
+            );
+          })}
           <div className="panel p-3">
             <div className="text-xs text-hl-secondary">Max drawdown (daily)</div>
             <div className="font-num text-lg text-hl-loss">
@@ -294,7 +299,12 @@ export default function PaperPage() {
               <div className="font-num text-sm">
                 Equity {book.equity === null ? '—' : formatPnl(book.equity).replace('+', '')}
                 {' · '}
-                Net {book.net === null ? '—' : formatPnl(book.net)}
+                Net{' '}
+                {book.net === null ? (
+                  '—'
+                ) : (
+                  <span className={book.net >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>{formatPnl(book.net)}</span>
+                )}
               </div>
               <div className="font-num text-xs text-hl-secondary">
                 Max DD {book.max_drawdown === null ? '—' : `${(Number(book.max_drawdown) * 100).toFixed(2)}%`}
