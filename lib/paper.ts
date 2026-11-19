@@ -36,6 +36,16 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
     [strategy]
   );
   const latest = equity[equity.length - 1] ?? null;
+  const legs = await query<any>(
+    `
+      SELECT symbol, qty, entry_price, mark_price, notional_usd, price_pnl, funding_pnl, ts
+      FROM paper_leg_marks
+      WHERE strategy_name = $1
+        AND ts = (SELECT MAX(ts) FROM paper_leg_marks WHERE strategy_name = $1)
+      ORDER BY notional_usd DESC
+    `,
+    [strategy]
+  );
   const capital = Number(open?.capital_usd ?? latest?.equity_usd ?? 0);
   return {
     strategy,
@@ -55,6 +65,16 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
       qty: Number(row.qty),
       price: Number(row.price),
       notional: Number(row.notional_usd),
+    })),
+    legs: legs.map((row) => ({
+      market: String(row.symbol).split('/')[0],
+      qty: Number(row.qty),
+      entry: Number(row.entry_price),
+      mark: Number(row.mark_price),
+      notional: Number(row.notional_usd),
+      price_pnl: Number(row.price_pnl),
+      funding: Number(row.funding_pnl),
+      ts: row.ts,
     })),
     latest: latest
       ? {

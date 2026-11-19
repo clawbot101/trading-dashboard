@@ -86,30 +86,54 @@ export default function PaperPage() {
           Fees are zero because no order was sent. Each hour is marked at that hour's bar close. Latest bar: {latest ? String(latest.ts).slice(0, 16) : '—'} UTC.
         </div>
       ) : null}
-      {body?.trades?.length ? (
+      {body?.legs?.length ? (
         <div className="panel overflow-x-auto">
           <table className="data-table w-full text-sm">
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th>Side</th>
-                <th>Qty</th>
-                <th>Entry</th>
-                <th>Notional</th>
+                <th>Market</th>
+                <th className="text-right">Size</th>
+                <th className="text-right">Position Value</th>
+                <th className="text-right">Entry Price</th>
+                <th className="text-right">Mark Price</th>
+                <th className="text-right">PnL (ROE %)</th>
+                <th className="text-right">Liq. Price</th>
+                <th className="text-right">Margin</th>
+                <th className="text-right">Funding</th>
               </tr>
             </thead>
             <tbody>
-              {body.trades.map((row: any) => (
-                <tr key={row.symbol}>
-                  <td className="px-3 py-2">{row.symbol}</td>
-                  <td className={`px-3 py-2 ${row.side === 'LONG' ? 'text-hl-profit' : 'text-hl-loss'}`}>{row.side}</td>
-                  <td className="px-3 py-2 font-num text-right">{Number(row.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-                  <td className="px-3 py-2 font-num text-right">{Number(row.price).toLocaleString(undefined, { maximumFractionDigits: 4 })}</td>
-                  <td className="px-3 py-2 font-num text-right">{formatPnl(row.notional).replace('+', '')}</td>
-                </tr>
-              ))}
+              {body.legs.map((row: any) => {
+                const long = row.qty > 0;
+                const side = long ? 'text-hl-profit' : 'text-hl-loss';
+                const roe = row.notional > 0 ? (row.price_pnl / row.notional) * 100 : 0;
+                return (
+                  <tr key={row.market}>
+                    <td className={`px-3 py-2 font-medium ${side}`}>
+                      {row.market} <span className="text-hl-muted text-xs">1x</span>
+                    </td>
+                    <td className={`px-3 py-2 font-num text-right ${side}`}>
+                      {Math.abs(row.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })} {row.market}
+                    </td>
+                    <td className="px-3 py-2 font-num text-right">${row.notional.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                    <td className="px-3 py-2 font-num text-right">{row.entry.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+                    <td className="px-3 py-2 font-num text-right">{row.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</td>
+                    <td className={`px-3 py-2 font-num text-right ${row.price_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                      {formatPnl(row.price_pnl)} ({roe >= 0 ? '+' : ''}{roe.toFixed(1)}%)
+                    </td>
+                    <td className="px-3 py-2 font-num text-right text-hl-muted">N/A</td>
+                    <td className="px-3 py-2 font-num text-right">${row.notional.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                    <td className={`px-3 py-2 font-num text-right ${row.funding >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                      {formatPnl(row.funding)}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
+          <div className="px-3 py-2 text-xs text-hl-muted">
+            Margin is shown at 1x (no leverage), so margin equals position value. Liq. Price is N/A because nothing is levered.
+          </div>
         </div>
       ) : null}
       {daily.length ? (
