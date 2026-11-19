@@ -111,11 +111,10 @@ function PaperBook({ strategy }: { strategy: string }) {
       ) : null}
       {isLoading ? <div className="text-sm text-hl-secondary">Loading paper book…</div> : null}
       {latest ? (
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-2">
           {[
             ['Equity', latest.equity],
             ['Net', latest.net],
-            ['Since open', latest.net],
             ['Funding', latest.funding_pnl],
             ['Gross', latest.gross],
           ].map(([label, value]) => (
