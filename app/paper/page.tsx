@@ -7,6 +7,13 @@ import PnlChart from '../../components/PnlChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
+/** Format a timestamp as "YYYY-MM-DD HH:mm" in a fixed UTC offset (hours). */
+function fmtUtc(ts: string, offsetHours = 0): string {
+  const d = new Date(new Date(ts).getTime() + offsetHours * 3600_000);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+}
+
 function money(n: number) {
   return <span className={n >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>{formatPnl(n)}</span>;
 }
@@ -71,10 +78,38 @@ export default function PaperPage() {
   return (
     <div className="px-4 py-4 space-y-4">
       <div>
-        <h1 className="text-lg font-semibold">Paper</h1>
+        <h1 className="text-lg font-semibold">Paper · MW majors vs weak alts</h1>
         <p className="text-xs text-hl-secondary">
-          MW dry run, simulated from its own $10,000. These rows are not live positions and are not in Overview.
+          Dry run, simulated from its own $10,000. Not live positions, not in Overview.
         </p>
+      </div>
+      {body?.open_cycle ? (
+        <div className="panel p-3 flex flex-wrap items-baseline gap-x-6 gap-y-1">
+          <div>
+            <div className="text-xs text-hl-secondary">Paper trading started</div>
+            <div className="font-num text-base font-semibold text-hl-accent">
+              {fmtUtc(body.open_cycle.ended_at)} UTC
+            </div>
+          </div>
+          <div className="text-xs text-hl-secondary">
+            = {fmtUtc(body.open_cycle.ended_at, -7)} (UTC-7) · signal day {body.open_cycle.signal_day} · marked hourly since then
+          </div>
+        </div>
+      ) : null}
+      <div className="panel p-3 space-y-1 text-xs text-hl-secondary">
+        <div className="text-sm text-hl-text font-medium">Strategy</div>
+        <div>
+          Market-neutral. Each day it goes long the majors BTC, ETH, HYPE, ZEC and SOL, 10% of capital each, and shorts
+          the 5 alts whose LunarCrush social dominance fell most versus their own 30-day history, 10% each.
+        </div>
+        <div>
+          Universe: top 60 Hyperliquid perps by 30-day median of close × volume. PAXG and the majors are not shorted. If fewer
+          than 15 alts score, there is no short leg that day.
+        </div>
+        <div>
+          Signal: social dominance z-score, log-based, using the LunarCrush bar from two days before the run. Rebalance at
+          00:45 UTC daily. The book is 1x gross ($10,000), with no stops, no risk governor, and no fees in the paper PnL.
+        </div>
       </div>
       {error || data?.ok === false ? (
         <div className="text-sm text-hl-loss">{error?.message || data?.error}</div>
