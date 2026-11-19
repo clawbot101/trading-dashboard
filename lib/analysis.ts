@@ -32,6 +32,13 @@ function extra(target: string[], open: string[]): string[] {
   return open.filter((name) => !want.has(name));
 }
 
+function dayText(value: unknown): string {
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value).slice(0, 10);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 function splitNames(raw: string | null | undefined): string[] {
   if (!raw) return [];
   return raw.split(',').map((name) => name.trim()).filter(Boolean);
@@ -50,8 +57,8 @@ export async function getRuleComparison(book: AnalysisBook) {
   );
   const rows = stored.map((row) => ({
     book: STRATEGY[book],
-    signal_day: String(row.signal_day).slice(0, 10),
-    run_day: String(row.run_day).slice(0, 10),
+    signal_day: dayText(row.signal_day),
+    run_day: dayText(row.run_day),
     cycle_start: row.cycle_start,
     status: row.status,
     reason: row.reason,
@@ -142,7 +149,7 @@ export async function getBacktestComparison(book: AnalysisBook) {
     [STRATEGY[book], BT_FROM, BT_TO]
   );
   const days = rows.map((row) => ({
-    day: String(row.day).slice(0, 10),
+    day: dayText(row.day),
     live_status: row.live_status,
     live_pnl: Number(row.live_pnl) || 0,
     backtest_pnl: Number(row.backtest_pnl) || 0,
