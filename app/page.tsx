@@ -658,7 +658,7 @@ const STRATEGY_NOTES: Record<string, { title: string; lines: string[] }> = {
       'Universe is the 60 Hyperliquid perps with the highest 30-day median dollar volume, and a name needs at least 20 volume days. The signal day is two days before the run. The book is replaced at 00:30 UTC.',
       'That day, keep the more active half by log contributors. The score is the mean Galaxy Score over the 7 calendar days ending on the signal day, counting only days that had posts. A name needs at least 4 of those days.',
       'Long the 5 highest scores and short the 5 lowest, 10% of capital each. Fewer than 10 scored names makes that decision flat. If the LunarCrush panel is missing or stale, the open book is kept.',
-      'Target capital $10,000, gross 1x. No stops.',
+      'No stops.',
     ],
   },
   l4_bot_fade: {
