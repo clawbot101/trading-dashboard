@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
 import { formatPnl } from '../../lib/format';
 import PnlChart from '../../components/PnlChart';
@@ -10,8 +11,40 @@ function money(n: number) {
   return <span className={n >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>{formatPnl(n)}</span>;
 }
 
+type SortKey = 'market' | 'size' | 'notional' | 'entry' | 'mark' | 'pnl' | 'margin' | 'funding';
+
+const SORTS: { key: SortKey; label: string; align: 'left' | 'right' }[] = [
+  { key: 'market', label: 'Market', align: 'left' },
+  { key: 'size', label: 'Size', align: 'right' },
+  { key: 'notional', label: 'Position Value', align: 'right' },
+  { key: 'entry', label: 'Entry Price', align: 'right' },
+  { key: 'mark', label: 'Mark Price', align: 'right' },
+  { key: 'pnl', label: 'PnL (ROE %)', align: 'right' },
+  { key: 'margin', label: 'Margin', align: 'right' },
+  { key: 'funding', label: 'Funding', align: 'right' },
+];
+
+function sortValue(row: any, key: SortKey): number | string {
+  if (key === 'market') return String(row.market);
+  if (key === 'size') return Math.abs(Number(row.qty));
+  if (key === 'pnl') return Number(row.price_pnl);
+  if (key === 'margin') return Number(row.notional);
+  return Number(row[key]);
+}
+
 export default function PaperPage() {
   const { data, error, isLoading } = useSWR('/api/paper', fetcher, { refreshInterval: 300000 });
+  const [sortKey, setSortKey] = useState<SortKey>('notional');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  function onSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((dir) => (dir === 'asc' ? 'desc' : 'asc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDir(key === 'market' ? 'asc' : 'desc');
+  }
   const body = data?.data;
   const latest = body?.latest;
   // Last hourly point per UTC day, then day-over-day change. The first day is measured from the $10,000 open.
@@ -91,19 +124,33 @@ export default function PaperPage() {
           <table className="data-table w-full text-sm">
             <thead>
               <tr>
-                <th>Market</th>
-                <th className="text-right">Size</th>
-                <th className="text-right">Position Value</th>
-                <th className="text-right">Entry Price</th>
-                <th className="text-right">Mark Price</th>
-                <th className="text-right">PnL (ROE %)</th>
-                <th className="text-right">Liq. Price</th>
-                <th className="text-right">Margin</th>
-                <th className="text-right">Funding</th>
+                {SORTS.map((col) => (
+                  <th key={col.key} className={col.align === 'right' ? 'text-right' : 'text-left'}>
+                    <button
+                      type="button"
+                      onClick={() => onSort(col.key)}
+                      className={`inline-flex w-full items-center gap-1 whitespace-nowrap hover:text-hl-text ${
+                        col.align === 'right' ? 'justify-end' : 'justify-start'
+                      } ${sortKey === col.key ? 'text-hl-accent' : ''}`}
+                    >
+                      <span>{col.label}</span>
+                      <span className={`text-[10px] ${sortKey === col.key ? 'opacity-100' : 'opacity-30'}`}>
+                        {sortKey === col.key ? (sortDir === 'asc' ? '▲' : '▼') : '↕'}
+                      </span>
+                    </button>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
-              {body.legs.map((row: any) => {
+              {[...body.legs]
+                .sort((a: any, b: any) => {
+                  const av = sortValue(a, sortKey);
+                  const bv = sortValue(b, sortKey);
+                  const cmp = typeof av === 'string' ? av.localeCompare(String(bv)) : av - Number(bv);
+                  return sortDir === 'asc' ? cmp : -cmp;
+                })
+                .map((row: any) => {
                 const long = row.qty > 0;
                 const side = long ? 'text-hl-profit' : 'text-hl-loss';
                 const roe = row.notional > 0 ? (row.price_pnl / row.notional) * 100 : 0;
@@ -121,7 +168,6 @@ export default function PaperPage() {
                     <td className={`px-3 py-2 font-num text-right ${row.price_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
                       {formatPnl(row.price_pnl)} ({roe >= 0 ? '+' : ''}{roe.toFixed(1)}%)
                     </td>
-                    <td className="px-3 py-2 font-num text-right text-hl-muted">N/A</td>
                     <td className="px-3 py-2 font-num text-right">${row.notional.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
                     <td className={`px-3 py-2 font-num text-right ${row.funding >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
                       {formatPnl(row.funding)}
@@ -132,7 +178,7 @@ export default function PaperPage() {
             </tbody>
           </table>
           <div className="px-3 py-2 text-xs text-hl-muted">
-            Margin is shown at 1x (no leverage), so margin equals position value. Liq. Price is N/A because nothing is levered.
+            Click a column to sort. Margin equals position value because the book is 1x.
           </div>
         </div>
       ) : null}
