@@ -32,7 +32,6 @@ export default function HeaderBar() {
         <div className="flex items-center gap-1">
           <NavLink href="/">Overview</NavLink>
           <NavLink href="/positions">Positions</NavLink>
-          <NavLink href="/trades">Trades</NavLink>
           <NavLink href="/analysis/rules">Analysis</NavLink>
           <NavLink href="/paper">Paper</NavLink>
         </div>
