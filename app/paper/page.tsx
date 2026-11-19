@@ -111,7 +111,7 @@ function PaperBook({ strategy }: { strategy: string }) {
       ) : null}
       {isLoading ? <div className="text-sm text-hl-secondary">Loading paper book…</div> : null}
       {latest ? (
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
           {[
             ['Equity', latest.equity],
             ['Net', latest.net],
@@ -124,6 +124,21 @@ function PaperBook({ strategy }: { strategy: string }) {
               <div className="font-num text-lg">{formatPnl(Number(value))}</div>
             </div>
           ))}
+          <div className="panel p-3">
+            <div className="text-xs text-hl-secondary">Max drawdown</div>
+            <div className="font-num text-lg text-hl-loss">
+              {latest.max_drawdown === null || latest.max_drawdown === undefined
+                ? '—'
+                : `${(Number(latest.max_drawdown) * 100).toFixed(2)}%`}
+            </div>
+          </div>
+          <div className="panel p-3">
+            <div className="text-xs text-hl-secondary">Sharpe</div>
+            <div className="font-num text-lg">
+              {latest.sharpe === null || latest.sharpe === undefined ? '—' : Number(latest.sharpe).toFixed(2)}
+            </div>
+            <div className="text-[10px] text-hl-muted">hourly, annualized, rf 0</div>
+          </div>
         </div>
       ) : null}
       {body?.equity?.length ? (
@@ -276,6 +291,11 @@ export default function PaperPage() {
                 Equity {book.equity === null ? '—' : formatPnl(book.equity).replace('+', '')}
                 {' · '}
                 Net {book.net === null ? '—' : formatPnl(book.net)}
+              </div>
+              <div className="font-num text-xs text-hl-secondary">
+                Max DD {book.max_drawdown === null ? '—' : `${(Number(book.max_drawdown) * 100).toFixed(2)}%`}
+                {' · '}
+                Sharpe {book.sharpe === null ? '—' : Number(book.sharpe).toFixed(2)}
               </div>
             </button>
           );

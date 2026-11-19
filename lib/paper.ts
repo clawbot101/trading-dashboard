@@ -16,6 +16,30 @@ export const PAPER_PROFILES: Record<string, { title: string; blurb: string; over
   },
 };
 
+/** Max drawdown and Sharpe from the hourly paper equity marks. Risk-free rate is 0. */
+export function paperRisk(equities: number[]) {
+  if (equities.length < 2) {
+    return { max_drawdown: null as number | null, sharpe: null as number | null, hours: 0 };
+  }
+  let peak = equities[0];
+  let maxDrawdown = 0;
+  const returns: number[] = [];
+  for (let i = 1; i < equities.length; i += 1) {
+    peak = Math.max(peak, equities[i]);
+    maxDrawdown = Math.min(maxDrawdown, equities[i] / peak - 1);
+    if (equities[i - 1] > 0) returns.push(equities[i] / equities[i - 1] - 1);
+  }
+  let sharpe: number | null = null;
+  if (returns.length >= 2) {
+    const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
+    const variance =
+      returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
+    const deviation = Math.sqrt(variance);
+    sharpe = deviation > 0 ? (mean / deviation) * Math.sqrt(24 * 365) : null;
+  }
+  return { max_drawdown: maxDrawdown, sharpe, hours: returns.length };
+}
+
 function profileFor(strategy: string) {
   return (
     PAPER_PROFILES[strategy] ?? {
@@ -42,6 +66,11 @@ export async function listPaperBooks() {
     const latest = await queryOneSafe(row.strategy_name);
     const capital = Number(row.capital_usd ?? 0);
     const equity = latest ? Number(latest.equity_usd) : null;
+    const series = await query<any>(
+      `SELECT equity_usd FROM paper_equity WHERE strategy_name = $1 ORDER BY ts`,
+      [row.strategy_name]
+    );
+    const risk = paperRisk(series.map((point) => Number(point.equity_usd)));
     books.push({
       strategy: row.strategy_name,
       ...profileFor(row.strategy_name),
@@ -50,6 +79,9 @@ export async function listPaperBooks() {
       equity,
       net: equity === null ? null : equity - capital,
       mark_ts: latest?.ts ?? null,
+      max_drawdown: risk.max_drawdown,
+      sharpe: risk.sharpe,
+      sharpe_hours: risk.hours,
     });
   }
   return books;
@@ -112,6 +144,7 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
     [strategy]
   );
   const capital = Number(open?.capital_usd ?? latest?.equity_usd ?? 0);
+  const risk = paperRisk(equity.map((row) => Number(row.equity_usd)));
   return {
     strategy,
     profile: profileFor(strategy),
@@ -151,6 +184,9 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
           fee_pnl: Number(latest.fee_pnl),
           gross: Number(latest.gross_notional),
           net: Number(latest.equity_usd) - capital,
+          max_drawdown: risk.max_drawdown,
+          sharpe: risk.sharpe,
+          sharpe_hours: risk.hours,
         }
       : null,
     equity: equity.map((row) => ({
