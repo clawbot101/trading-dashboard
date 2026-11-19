@@ -116,11 +116,10 @@ export default function PaperPage() {
       ) : null}
       {isLoading ? <div className="text-sm text-hl-secondary">Loading paper book…</div> : null}
       {latest ? (
-        <div className="grid grid-cols-5 gap-2">
+        <div className="grid grid-cols-4 gap-2">
           {[
             ['Equity', latest.equity],
             ['Net', latest.net],
-            ['Price', latest.price_pnl],
             ['Funding', latest.funding_pnl],
             ['Gross', latest.gross],
           ].map(([label, value]) => (
