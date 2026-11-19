@@ -388,6 +388,7 @@ export default function OverviewPage() {
                 {open && (
                   <tr className="border-b border-hl-border/40 bg-hl-accent/5">
                     <td colSpan={4} className="px-3 pb-3 pt-0">
+                      <StrategyNote name={s.strategy_name} />
                       <StrategyBook
                         positions={bookPositions}
                         loading={bookLoading}
@@ -556,11 +557,13 @@ export default function OverviewPage() {
                     <span className="font-medium">{a?.payload?.strategy_name ?? 'unknown'}</span>
                     <span className="font-medium text-hl-secondary">
                       {a?.payload?.same_position
-                        ? 'Same position (no open/close at UTC 00:00 window)'
-                        : `Rebalanced (${a?.payload?.fill_count ?? 0} fills in UTC 00:00 window)`}
+                        ? `Same position (no open/close at ${a?.payload?.window_label ?? 'rebalance'} window)`
+                        : `Rebalanced (${a?.payload?.fill_count ?? 0} fills in ${a?.payload?.window_label ?? 'rebalance'} window)`}
                     </span>
                   </div>
-                  <div className="font-num text-hl-muted">UTC {formatUtcHm(a.ts)}</div>
+                  <div className="font-num text-hl-muted">
+                    UTC {formatUtcHm(a?.payload?.last_fill_ts ?? a.ts)}
+                  </div>
                 </div>
               ) : (
                 <div
@@ -645,6 +648,42 @@ function normalizeEquityCurve(points: any[]) {
 
   return Array.from(map.values()).sort(
     (a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime()
+  );
+}
+
+const STRATEGY_NOTES: Record<string, { title: string; lines: string[] }> = {
+  l2_galaxy_rank: {
+    title: 'L2 · Galaxy rank',
+    lines: [
+      'Universe is the 60 Hyperliquid perps with the highest 30-day median dollar volume, and a name needs at least 20 volume days. The signal day is two days before the run. The book is replaced at 00:30 UTC.',
+      'That day, keep the more active half by log contributors. The score is the mean Galaxy Score over the 7 calendar days ending on the signal day, counting only days that had posts. A name needs at least 4 of those days.',
+      'Long the 5 highest scores and short the 5 lowest, 10% of capital each. Fewer than 10 scored names makes that decision flat. If the LunarCrush panel is missing or stale, the open book is kept.',
+      'Target capital $10,000, gross 1x. No stops.',
+    ],
+  },
+  l4_bot_fade: {
+    title: 'L4 · low posts-per-author, liquid hedge',
+    lines: [
+      'Same top-60 universe. The signal day is two days before the run, and the book is set at 00:15 UTC.',
+      'Each day, among names with posts, short the 5 with the lowest posts per author (log posts minus log contributors), 10% each. The hedge is long the 10 most liquid of that day’s eligible names by 30-day median dollar volume, 5% each.',
+      'Five daily sleeves stay open together. Each sleeve is scaled to one fifth, so a name’s weight is the average of the sleeves that still hold it. A sleeve with fewer than 20 names is flat for that day.',
+      'The averaged book is then sized at 0.72x. If the LunarCrush panel is missing or stale, the open sleeves are kept. No stops.',
+    ],
+  },
+};
+
+function StrategyNote({ name }: { name: string }) {
+  const note = STRATEGY_NOTES[name];
+  if (!note) return null;
+  return (
+    <div className="mb-2 space-y-1 pt-2">
+      <div className="text-xs font-medium">{note.title}</div>
+      {note.lines.map((line) => (
+        <p key={line} className="text-xs text-hl-secondary">
+          {line}
+        </p>
+      ))}
+    </div>
   );
 }
 
