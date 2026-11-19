@@ -1,6 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
+import { usePathname } from 'next/navigation';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -18,6 +19,8 @@ export default function HeaderBar() {
   const stats = data?.data?.stats;
   const equity = stats?.total_equity;
   const pnl24h = stats?.pnl_24h;
+  const pathname = usePathname();
+  if (pathname === '/login') return null;
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-hl-panel border-b border-hl-border">
