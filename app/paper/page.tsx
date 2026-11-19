@@ -111,10 +111,11 @@ function PaperBook({ strategy }: { strategy: string }) {
       ) : null}
       {isLoading ? <div className="text-sm text-hl-secondary">Loading paper book…</div> : null}
       {latest ? (
-        <div className="grid grid-cols-4 gap-2">
+        <div className="grid grid-cols-5 gap-2">
           {[
             ['Equity', latest.equity],
             ['Net', latest.net],
+            ['Since open', latest.net],
             ['Funding', latest.funding_pnl],
             ['Gross', latest.gross],
           ].map(([label, value]) => (
@@ -218,10 +219,8 @@ function PaperBook({ strategy }: { strategy: string }) {
               <tr>
                 <th>Day (UTC)</th>
                 <th>Day change</th>
-                <th>Price</th>
                 <th>Funding</th>
                 <th>Equity at last hour</th>
-                <th>Since open</th>
               </tr>
             </thead>
             <tbody>
@@ -229,10 +228,8 @@ function PaperBook({ strategy }: { strategy: string }) {
                 <tr key={day}>
                   <td className="px-3 py-2 font-num">{day}</td>
                   <td className="px-3 py-2 font-num text-right">{money(row.equity_change)}</td>
-                  <td className="px-3 py-2 font-num text-right">{money(row.price_change)}</td>
                   <td className="px-3 py-2 font-num text-right">{money(row.funding_change)}</td>
                   <td className="px-3 py-2 font-num text-right">{row.end_equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                  <td className="px-3 py-2 font-num text-right">{money(row.since_open)}</td>
                 </tr>
               ))}
             </tbody>
