@@ -257,8 +257,9 @@ function PaperBook({ strategy }: { strategy: string }) {
 
 export default function PaperPage() {
   const { data, error, isLoading } = useSWR('/api/paper', fetcher, { refreshInterval: 300000 });
-  const [selected, setSelected] = useState<string | null>(null);
+  const [picked, setPicked] = useState<string | null>(null);
   const books = data?.data?.books ?? [];
+  const selected = picked ?? books[0]?.strategy ?? null;
 
   return (
     <div className="px-4 py-4 space-y-4">
@@ -279,7 +280,7 @@ export default function PaperPage() {
             <button
               key={book.strategy}
               type="button"
-              onClick={() => setSelected(active ? null : book.strategy)}
+              onClick={() => setPicked(book.strategy)}
               className={`panel p-3 text-left space-y-1 ${active ? 'border-hl-accent' : ''}`}
             >
               <div className="text-sm font-medium">{book.title}</div>
@@ -301,9 +302,6 @@ export default function PaperPage() {
           );
         })}
       </div>
-      {!selected && books.length ? (
-        <div className="text-xs text-hl-muted">Select a card to open that book.</div>
-      ) : null}
       {selected ? <PaperBook strategy={selected} /> : null}
     </div>
   );
