@@ -1,12 +1,9 @@
 /**
  * Strategy Analysis for the live L2 and L4 books.
- * Rules come from the trading logs. PnL split comes from the trading database.
- * The backtest series is the saved 2026-10-23 .. 2026-11-15 replay, not a live rerun.
+ * Rules and the saved backtest come from analysis_* tables, not from local log files.
+ * PnL split comes from the trading database. Live fills and equity tables are not written here.
  */
 
-import fs from 'fs/promises';
-import path from 'path';
-import { getLiveBooks, type LiveBookRow } from './live-books';
 import { getLivePositions } from './queries/positions';
 import { query } from './db';
 import { getPnlAttribution, timeRangeToTimestamps } from './queries/overview';
@@ -35,10 +32,32 @@ function extra(target: string[], open: string[]): string[] {
   return open.filter((name) => !want.has(name));
 }
 
+function splitNames(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  return raw.split(',').map((name) => name.trim()).filter(Boolean);
+}
+
 export async function getRuleComparison(book: AnalysisBook) {
-  const from = new Date(Date.now() - 30 * 86_400_000).toISOString();
-  const to = new Date(Date.now() + 86_400_000).toISOString();
-  const rows = await getLiveBooks(from, to, book);
+  const from = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+  const stored = await query<any>(
+    `
+      SELECT signal_day, run_day, cycle_start, status, reason, longs, shorts
+      FROM analysis_signal_days
+      WHERE book = $1 AND (signal_day >= $2 OR run_day >= $2)
+      ORDER BY signal_day DESC, cycle_start DESC
+    `,
+    [STRATEGY[book], from]
+  );
+  const rows = stored.map((row) => ({
+    book: STRATEGY[book],
+    signal_day: String(row.signal_day).slice(0, 10),
+    run_day: String(row.run_day).slice(0, 10),
+    cycle_start: row.cycle_start,
+    status: row.status,
+    reason: row.reason,
+    longs: splitNames(row.longs),
+    shorts: splitNames(row.shorts),
+  }));
   const positions = await getLivePositions(undefined, STRATEGY[book]);
   const openLong = positions.filter((p) => p.side === 'LONG').map((p) => base(p.symbol));
   const openShort = positions.filter((p) => p.side === 'SHORT').map((p) => base(p.symbol));
@@ -112,73 +131,33 @@ export async function getPnlSplit(book: AnalysisBook, range = '30D') {
   };
 }
 
-function csvRows(text: string): Record<string, string>[] {
-  const [header, ...lines] = text.trim().split('\n');
-  const cols = header.split(',');
-  return lines.filter(Boolean).map((line) => {
-    const cells: string[] = [];
-    let cur = '';
-    let quoted = false;
-    for (const ch of line) {
-      if (ch === '"') {
-        quoted = !quoted;
-        continue;
-      }
-      if (ch === ',' && !quoted) {
-        cells.push(cur);
-        cur = '';
-        continue;
-      }
-      cur += ch;
-    }
-    cells.push(cur);
-    const row: Record<string, string> = {};
-    cols.forEach((col, i) => {
-      row[col] = cells[i] ?? '';
-    });
-    return row;
-  });
-}
-
 export async function getBacktestComparison(book: AnalysisBook) {
-  const file = process.env.L2_L4_BACKTEST_CSV
-    || '/tmp/l2_l4_backtest_vs_live/daily_comparison.csv';
-  const label = book === 'l2' ? 'L2' : 'L4';
-  try {
-    const text = await fs.readFile(file, 'utf8');
-    const all = csvRows(text).filter((row) => row.book === label);
-    const window = all.filter((row) => row.day >= BT_FROM && row.day <= BT_TO);
-    const sum = (key: string) =>
-      window.reduce((acc, row) => acc + (Number(row[key]) || 0), 0);
-    return {
-      available: true,
-      book,
-      from: BT_FROM,
-      to: BT_TO,
-      generated: '2026-11-16',
-      source: path.basename(file),
-      live_pnl: sum('live_equity_change_usd'),
-      backtest_pnl: sum('bt_pnl_usd_asof'),
-      days: window.map((row) => ({
-        day: row.day,
-        live_status: row.live_status,
-        live_pnl: Number(row.live_equity_change_usd) || 0,
-        backtest_pnl: Number(row.bt_pnl_usd_asof) || 0,
-        gap: Number(row.gap_usd_live_minus_bt) || 0,
-        live_longs: row.live_target_longs,
-        live_shorts: row.live_target_shorts,
-        bt_longs: row.bt_longs,
-        bt_shorts: row.bt_shorts,
-      })),
-    };
-  } catch (err: any) {
-    return {
-      available: false,
-      book,
-      from: BT_FROM,
-      to: BT_TO,
-      error: err?.message ?? 'Backtest file missing',
-      days: [] as LiveBookRow[],
-    };
-  }
+  const rows = await query<any>(
+    `
+      SELECT day, live_status, live_pnl, backtest_pnl, gap
+      FROM analysis_backtest_days
+      WHERE book = $1 AND day >= $2 AND day <= $3
+      ORDER BY day
+    `,
+    [STRATEGY[book], BT_FROM, BT_TO]
+  );
+  const days = rows.map((row) => ({
+    day: String(row.day).slice(0, 10),
+    live_status: row.live_status,
+    live_pnl: Number(row.live_pnl) || 0,
+    backtest_pnl: Number(row.backtest_pnl) || 0,
+    gap: Number(row.gap) || 0,
+  }));
+  const sum = (key: 'live_pnl' | 'backtest_pnl') => days.reduce((acc, row) => acc + row[key], 0);
+  return {
+    available: days.length > 0,
+    book,
+    from: BT_FROM,
+    to: BT_TO,
+    generated: '2026-11-16',
+    source: 'analysis_backtest_days',
+    live_pnl: sum('live_pnl'),
+    backtest_pnl: sum('backtest_pnl'),
+    days,
+  };
 }

@@ -22,7 +22,7 @@ export default function BacktestPage() {
       ) : null}
       {isLoading ? <div className="text-sm text-hl-secondary">Loading replay…</div> : null}
       {body && !body.available ? (
-        <div className="panel p-3 text-sm text-hl-secondary">Replay file is not on this machine.</div>
+        <div className="panel p-3 text-sm text-hl-secondary">No replay rows are loaded.</div>
       ) : null}
       {body?.available ? (
         <>
