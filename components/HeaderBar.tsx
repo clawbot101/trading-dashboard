@@ -33,6 +33,7 @@ export default function HeaderBar() {
           <NavLink href="/">Overview</NavLink>
           <NavLink href="/positions">Positions</NavLink>
           <NavLink href="/trades">Trades</NavLink>
+          <NavLink href="/analysis/rules">Analysis</NavLink>
         </div>
 
         {/* Right: Venue status + Equity + 24h PnL */}
