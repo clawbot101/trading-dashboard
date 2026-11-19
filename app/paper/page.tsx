@@ -124,7 +124,7 @@ function PaperBook({ strategy }: { strategy: string }) {
             </div>
           ))}
           <div className="panel p-3">
-            <div className="text-xs text-hl-secondary">Max drawdown</div>
+            <div className="text-xs text-hl-secondary">Max drawdown (daily)</div>
             <div className="font-num text-lg text-hl-loss">
               {latest.max_drawdown === null || latest.max_drawdown === undefined
                 ? '—'
@@ -136,7 +136,11 @@ function PaperBook({ strategy }: { strategy: string }) {
             <div className="font-num text-lg">
               {latest.sharpe === null || latest.sharpe === undefined ? '—' : Number(latest.sharpe).toFixed(2)}
             </div>
-            <div className="text-[10px] text-hl-muted">hourly, annualized, rf 0</div>
+            <div className="text-[10px] text-hl-muted">
+              {latest.sharpe_days !== undefined && latest.sharpe_days < (latest.sharpe_min_days ?? 7)
+                ? `needs ${latest.sharpe_min_days ?? 7} daily returns, have ${latest.sharpe_days}`
+                : `daily, annualized √365, rf 0 (${latest.sharpe_days} days)`}
+            </div>
           </div>
         </div>
       ) : null}

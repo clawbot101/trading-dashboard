@@ -16,28 +16,42 @@ export const PAPER_PROFILES: Record<string, { title: string; blurb: string; over
   },
 };
 
-/** Max drawdown and Sharpe from the hourly paper equity marks. Risk-free rate is 0. */
-export function paperRisk(equities: number[]) {
-  if (equities.length < 2) {
-    return { max_drawdown: null as number | null, sharpe: null as number | null, hours: 0 };
+export const SHARPE_MIN_DAYS = 7;
+
+/**
+ * Daily risk stats from the paper equity marks. Each UTC day uses its last mark.
+ * The series starts at the opening capital. Sharpe is annualized with sqrt(365), rf = 0,
+ * and is only shown once there are SHARPE_MIN_DAYS daily returns.
+ */
+export function paperRisk(points: { ts: string | Date; equity: number }[], capital: number) {
+  const byDay = new Map<string, number>();
+  for (const point of points) {
+    const day = new Date(point.ts).toISOString().slice(0, 10);
+    byDay.set(day, point.equity);
   }
-  let peak = equities[0];
+  const closes = [capital, ...byDay.values()];
+  let peak = closes[0];
   let maxDrawdown = 0;
   const returns: number[] = [];
-  for (let i = 1; i < equities.length; i += 1) {
-    peak = Math.max(peak, equities[i]);
-    maxDrawdown = Math.min(maxDrawdown, equities[i] / peak - 1);
-    if (equities[i - 1] > 0) returns.push(equities[i] / equities[i - 1] - 1);
+  for (let i = 1; i < closes.length; i += 1) {
+    peak = Math.max(peak, closes[i]);
+    maxDrawdown = Math.min(maxDrawdown, closes[i] / peak - 1);
+    if (closes[i - 1] > 0) returns.push(closes[i] / closes[i - 1] - 1);
   }
   let sharpe: number | null = null;
-  if (returns.length >= 2) {
+  if (returns.length >= SHARPE_MIN_DAYS) {
     const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
     const variance =
       returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
     const deviation = Math.sqrt(variance);
-    sharpe = deviation > 0 ? (mean / deviation) * Math.sqrt(24 * 365) : null;
+    sharpe = deviation > 0 ? (mean / deviation) * Math.sqrt(365) : null;
   }
-  return { max_drawdown: maxDrawdown, sharpe, hours: returns.length };
+  return {
+    max_drawdown: maxDrawdown,
+    sharpe,
+    days: returns.length,
+    sharpe_min_days: SHARPE_MIN_DAYS,
+  };
 }
 
 function profileFor(strategy: string) {
@@ -67,10 +81,13 @@ export async function listPaperBooks() {
     const capital = Number(row.capital_usd ?? 0);
     const equity = latest ? Number(latest.equity_usd) : null;
     const series = await query<any>(
-      `SELECT equity_usd FROM paper_equity WHERE strategy_name = $1 ORDER BY ts`,
+      `SELECT ts, equity_usd FROM paper_equity WHERE strategy_name = $1 ORDER BY ts`,
       [row.strategy_name]
     );
-    const risk = paperRisk(series.map((point) => Number(point.equity_usd)));
+    const risk = paperRisk(
+      series.map((point) => ({ ts: point.ts, equity: Number(point.equity_usd) })),
+      capital
+    );
     books.push({
       strategy: row.strategy_name,
       ...profileFor(row.strategy_name),
@@ -81,7 +98,7 @@ export async function listPaperBooks() {
       mark_ts: latest?.ts ?? null,
       max_drawdown: risk.max_drawdown,
       sharpe: risk.sharpe,
-      sharpe_hours: risk.hours,
+      sharpe_days: risk.days,
     });
   }
   return books;
@@ -144,7 +161,10 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
     [strategy]
   );
   const capital = Number(open?.capital_usd ?? latest?.equity_usd ?? 0);
-  const risk = paperRisk(equity.map((row) => Number(row.equity_usd)));
+  const risk = paperRisk(
+    equity.map((row) => ({ ts: row.ts, equity: Number(row.equity_usd) })),
+    capital
+  );
   return {
     strategy,
     profile: profileFor(strategy),
@@ -186,7 +206,8 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
           net: Number(latest.equity_usd) - capital,
           max_drawdown: risk.max_drawdown,
           sharpe: risk.sharpe,
-          sharpe_hours: risk.hours,
+          sharpe_days: risk.days,
+          sharpe_min_days: risk.sharpe_min_days,
         }
       : null,
     equity: equity.map((row) => ({
