@@ -92,7 +92,7 @@ export default function PaperPage() {
             </div>
           </div>
           <div className="text-xs text-hl-secondary">
-            = {fmtUtc(body.open_cycle.ended_at, -7)} (UTC-7) · signal day {body.open_cycle.signal_day} · marked hourly since then
+            = {fmtUtc(body.open_cycle.ended_at, -7)} (UTC-7) · signal day {body.open_cycle.signal_day} · marks update at each MW run (00:45 UTC daily) or manual refresh
           </div>
         </div>
       ) : null}
@@ -151,7 +151,7 @@ export default function PaperPage() {
       {body?.open_cycle ? (
         <div className="text-xs text-hl-secondary">
           Open book from {String(body.open_cycle.ended_at).slice(0, 16)} UTC, signal day {body.open_cycle.signal_day}.
-          Fees are zero because no order was sent. Each hour is marked at that hour's bar close. Latest bar: {latest ? String(latest.ts).slice(0, 16) : '—'} UTC.
+          Fees are zero because no order was sent. Latest mark: {latest ? String(latest.ts).slice(0, 16) : '—'} UTC (hour bar close).
         </div>
       ) : null}
       {body?.legs?.length ? (
