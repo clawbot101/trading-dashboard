@@ -4,6 +4,71 @@
 
 import { query } from './db';
 
+export const PAPER_PROFILES: Record<string, { title: string; blurb: string; overview: string[] }> = {
+  mw_majors_weak: {
+    title: 'MW · majors vs weak alts',
+    blurb: 'Long five majors, short the five alts whose social dominance fell the most. 1x on $10,000.',
+    overview: [
+      'Market-neutral. Each day it goes long BTC, ETH, HYPE, ZEC and SOL, 10% of capital each, and shorts the 5 alts whose LunarCrush social dominance fell most versus their own 30-day history, 10% each.',
+      'Universe: top 60 Hyperliquid perps by 30-day median of close × volume. PAXG and the majors are not shorted. If fewer than 15 alts score, there is no short leg that day.',
+      'Signal uses the LunarCrush bar from two days before the run. Rebalance 00:45 UTC. No stops, no risk governor, and no fees in the paper PnL.',
+    ],
+  },
+};
+
+function profileFor(strategy: string) {
+  return (
+    PAPER_PROFILES[strategy] ?? {
+      title: strategy,
+      blurb: 'Paper book. Its own capital, separate from live.',
+      overview: [],
+    }
+  );
+}
+
+export async function listPaperBooks() {
+  const rows = await query<any>(
+    `
+      SELECT c.strategy_name,
+             MIN(c.ended_at) FILTER (WHERE c.trade_count > 0) AS started_at,
+             (ARRAY_AGG(c.capital_usd ORDER BY c.ended_at DESC) FILTER (WHERE c.trade_count > 0))[1] AS capital_usd
+      FROM paper_cycles c
+      GROUP BY c.strategy_name
+      ORDER BY started_at NULLS LAST
+    `
+  );
+  const books = [];
+  for (const row of rows) {
+    const latest = await queryOneSafe(row.strategy_name);
+    const capital = Number(row.capital_usd ?? 0);
+    const equity = latest ? Number(latest.equity_usd) : null;
+    books.push({
+      strategy: row.strategy_name,
+      ...profileFor(row.strategy_name),
+      started_at: row.started_at,
+      capital,
+      equity,
+      net: equity === null ? null : equity - capital,
+      mark_ts: latest?.ts ?? null,
+    });
+  }
+  return books;
+}
+
+async function queryOneSafe(strategy: string) {
+  const rows = await query<any>(
+    `
+      SELECT ts, equity_usd
+      FROM paper_equity
+      WHERE strategy_name = $1
+      ORDER BY ts DESC
+      LIMIT 1
+    `,
+    [strategy]
+  );
+  return rows[0] ?? null;
+}
+
 export async function getPaperBook(strategy = 'mw_majors_weak') {
   const cycles = await query<any>(
     `
@@ -49,6 +114,7 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
   const capital = Number(open?.capital_usd ?? latest?.equity_usd ?? 0);
   return {
     strategy,
+    profile: profileFor(strategy),
     capital,
     open_cycle: open
       ? {

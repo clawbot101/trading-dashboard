@@ -39,8 +39,10 @@ function sortValue(row: any, key: SortKey): number | string {
   return Number(row[key]);
 }
 
-export default function PaperPage() {
-  const { data, error, isLoading } = useSWR('/api/paper', fetcher, { refreshInterval: 300000 });
+function PaperBook({ strategy }: { strategy: string }) {
+  const { data, error, isLoading } = useSWR(`/api/paper?strategy=${strategy}`, fetcher, {
+    refreshInterval: 300000,
+  });
   const [sortKey, setSortKey] = useState<SortKey>('notional');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
@@ -76,11 +78,11 @@ export default function PaperPage() {
   }
 
   return (
-    <div className="px-4 py-4 space-y-4">
+    <div className="space-y-4">
       <div>
-        <h1 className="text-lg font-semibold">Paper · MW majors vs weak alts</h1>
+        <h1 className="text-lg font-semibold">{body?.profile?.title ?? strategy}</h1>
         <p className="text-xs text-hl-secondary">
-          Dry run, simulated from its own $10,000. Not live positions, not in Overview.
+          {body?.profile?.blurb ?? 'Paper book. Separate from live.'}
         </p>
       </div>
       {body?.open_cycle ? (
@@ -96,21 +98,14 @@ export default function PaperPage() {
           </div>
         </div>
       ) : null}
-      <div className="panel p-3 space-y-1 text-xs text-hl-secondary">
-        <div className="text-sm text-hl-text font-medium">Strategy</div>
-        <div>
-          Market-neutral. Each day it goes long the majors BTC, ETH, HYPE, ZEC and SOL, 10% of capital each, and shorts
-          the 5 alts whose LunarCrush social dominance fell most versus their own 30-day history, 10% each.
+      {body?.profile?.overview?.length ? (
+        <div className="panel p-3 space-y-1 text-xs text-hl-secondary">
+          <div className="text-sm text-hl-text font-medium">Strategy</div>
+          {body.profile.overview.map((line: string) => (
+            <div key={line}>{line}</div>
+          ))}
         </div>
-        <div>
-          Universe: top 60 Hyperliquid perps by 30-day median of close × volume. PAXG and the majors are not shorted. If fewer
-          than 15 alts score, there is no short leg that day.
-        </div>
-        <div>
-          Signal: social dominance z-score, log-based, using the LunarCrush bar from two days before the run. Rebalance at
-          00:45 UTC daily. The book is 1x gross ($10,000), with no stops, no risk governor, and no fees in the paper PnL.
-        </div>
-      </div>
+      ) : null}
       {error || data?.ok === false ? (
         <div className="text-sm text-hl-loss">{error?.message || data?.error}</div>
       ) : null}
@@ -244,6 +239,55 @@ export default function PaperPage() {
           </table>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+export default function PaperPage() {
+  const { data, error, isLoading } = useSWR('/api/paper', fetcher, { refreshInterval: 300000 });
+  const [selected, setSelected] = useState<string | null>(null);
+  const books = data?.data?.books ?? [];
+
+  return (
+    <div className="px-4 py-4 space-y-4">
+      <div>
+        <h1 className="text-lg font-semibold">Paper</h1>
+        <p className="text-xs text-hl-secondary">
+          Each card is its own dry-run book. Pick one. These are not live positions and are not in Overview.
+        </p>
+      </div>
+      {error || data?.ok === false ? (
+        <div className="text-sm text-hl-loss">{error?.message || data?.error}</div>
+      ) : null}
+      {isLoading ? <div className="text-sm text-hl-secondary">Loading paper books…</div> : null}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {books.map((book: any) => {
+          const active = selected === book.strategy;
+          return (
+            <button
+              key={book.strategy}
+              type="button"
+              onClick={() => setSelected(active ? null : book.strategy)}
+              className={`panel p-3 text-left space-y-1 ${active ? 'border-hl-accent' : ''}`}
+            >
+              <div className="text-sm font-medium">{book.title}</div>
+              <div className="text-xs text-hl-secondary">{book.blurb}</div>
+              <div className="text-xs text-hl-muted">
+                Started {book.started_at ? fmtUtc(book.started_at) : '—'} UTC
+              </div>
+              <div className="font-num text-sm">
+                Equity {book.equity === null ? '—' : formatPnl(book.equity).replace('+', '')}
+                {' · '}
+                Net {book.net === null ? '—' : formatPnl(book.net)}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      {!selected && books.length ? (
+        <div className="text-xs text-hl-muted">Select a card to open that book.</div>
+      ) : null}
+      {selected ? <PaperBook strategy={selected} /> : null}
     </div>
   );
 }
