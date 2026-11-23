@@ -174,6 +174,8 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
     [strategy]
   );
   const latest = equity[equity.length - 1] ?? null;
+  // First cycle that placed trades (or was backfilled). This is when the paper book started.
+  const firstTrade = cycles.filter((row) => Number(row.trade_count) > 0 || row.status === 'BACKFILLED').at(-1);
   const legs = await query<any>(
     `
       SELECT symbol, qty, entry_price, mark_price, notional_usd, price_pnl, funding_pnl, ts
@@ -222,6 +224,7 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
   return {
     strategy,
     profile: profileFor(strategy),
+    first_trade_at: firstTrade?.ended_at ?? null,
     capital,
     open_cycle: open
       ? {

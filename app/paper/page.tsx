@@ -89,13 +89,13 @@ function PaperBook({ strategy }: { strategy: string }) {
       {body?.open_cycle ? (
         <div className="panel p-3 flex flex-wrap items-baseline gap-x-6 gap-y-1">
           <div>
-            <div className="text-xs text-hl-secondary">Paper trading started</div>
+            <div className="text-xs text-hl-secondary">Paper trading started (first trade)</div>
             <div className="font-num text-base font-semibold text-hl-accent">
-              {fmtUtc(body.open_cycle.ended_at)} UTC
+              {fmtUtc(body.first_trade_at ?? body.open_cycle.ended_at)} UTC
             </div>
           </div>
           <div className="text-xs text-hl-secondary">
-            = {fmtUtc(body.open_cycle.ended_at, -7)} (UTC-7) · signal day {body.open_cycle.signal_day} · marks update at each MW run (00:45 UTC daily) or manual refresh
+            = {fmtUtc(body.first_trade_at ?? body.open_cycle.ended_at, -7)} (UTC-7) · current book from {fmtUtc(body.open_cycle.ended_at)} UTC, signal day {body.open_cycle.signal_day} · marks update at each MW run (00:45 UTC daily) or manual refresh
           </div>
         </div>
       ) : null}
