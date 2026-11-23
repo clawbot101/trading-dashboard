@@ -14,6 +14,16 @@ export const PAPER_PROFILES: Record<string, { title: string; blurb: string; over
       'Signal uses the LunarCrush bar from two days before the run. Rebalance 00:45 UTC. No stops, no risk governor, and no fees in the paper PnL.',
     ],
   },
+  n_new_listing_short: {
+    title: 'Recent listings vs liquid hedge',
+    blurb: 'Short up to 5 recently listed Hyperliquid perps, hedged with the 10 most liquid perps. $10,000.',
+    overview: [
+      'Hyperliquid candles only. Signal day D is the daily candle that closes at 00:00 UTC on D+1. The book is set at that midnight and held until the next one.',
+      'Shorts: listed 30 to 89 days, 3-day median dollar volume above $2m, not in the top 10 by 30-day median dollar volume. Youngest first, at most 5, each −10% of capital.',
+      'Long hedge: those top 10, equal weight, and the total long matches the total short. No qualifying short means the book is flat. A name leaves at day 90, when its volume falls under $2m, when it joins the top 10, or when 5 younger names qualify.',
+      'Costs: 4.5 bps of capital per unit of weight traded, including the open. Funding is the real Hyperliquid hourly rate. Capital $10,000, separate from the MW paper book and from live trading.',
+    ],
+  },
 };
 
 export const SHARPE_MIN_DAYS = 7;
@@ -68,8 +78,10 @@ export async function listPaperBooks() {
   const rows = await query<any>(
     `
       SELECT c.strategy_name,
-             MIN(c.ended_at) FILTER (WHERE c.trade_count > 0) AS started_at,
-             (ARRAY_AGG(c.capital_usd ORDER BY c.ended_at DESC) FILTER (WHERE c.trade_count > 0))[1] AS capital_usd
+             MIN(c.ended_at) FILTER (WHERE c.trade_count > 0 OR c.status = 'BACKFILLED') AS started_at,
+             MAX(c.ended_at) FILTER (WHERE c.trade_count > 0) AS last_trade_at,
+             MAX(c.ended_at) AS last_run_at,
+             (ARRAY_AGG(c.capital_usd ORDER BY c.ended_at DESC))[1] AS capital_usd
       FROM paper_cycles c
       GROUP BY c.strategy_name
       ORDER BY started_at NULLS LAST
@@ -92,6 +104,8 @@ export async function listPaperBooks() {
       strategy: row.strategy_name,
       ...profileFor(row.strategy_name),
       started_at: row.started_at,
+      last_rebalance_at: row.strategy_name === 'n_new_listing_short' ? row.last_run_at : row.last_trade_at,
+      last_run_at: row.last_run_at,
       capital,
       equity,
       net: equity === null ? null : equity - capital,
@@ -128,7 +142,17 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
     `,
     [strategy]
   );
-  const open = cycles.find((row) => Number(row.trade_count) > 0);
+  // Current book = the latest cycle that placed trades. Later cycles with no trades mean "held".
+  const open = cycles.find((row) => Number(row.trade_count) > 0) ?? cycles[0];
+  // Latest run of any kind. For MW a run with no trades was held (usually LunarCrush coverage).
+  // Book N always rebalances: a flat day is a real decision, so its latest run is its rebalance.
+  const latestRun = cycles[0] ?? null;
+  const rebalance = strategy === 'n_new_listing_short' ? latestRun : open;
+  const heldReason = (note: unknown) => {
+    const parts = String(note ?? '').split('; ');
+    const alert = parts.find((part) => part.includes('ALERT')) ?? parts.find((part) => part.includes('held:'));
+    return alert ? alert.replace(/^mw_majors_weak\s+/, '').trim() : null;
+  };
   const trades = open
     ? await query<any>(
         `
@@ -160,6 +184,36 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
     `,
     [strategy]
   );
+  // Positions at the last hourly mark of each UTC day. Shows the book in effect that day.
+  const dayLegRows = await query<any>(
+    `
+      WITH last AS (
+        SELECT (ts AT TIME ZONE 'UTC')::date AS d, MAX(ts) AS mts
+        FROM paper_leg_marks
+        WHERE strategy_name = $1
+        GROUP BY 1
+      )
+      SELECT to_char((l.ts AT TIME ZONE 'UTC')::date, 'YYYY-MM-DD') AS day,
+             l.symbol, l.qty, l.entry_price, l.mark_price, l.notional_usd, l.price_pnl, l.funding_pnl
+      FROM paper_leg_marks l
+      JOIN last ON l.ts = last.mts AND (l.ts AT TIME ZONE 'UTC')::date = last.d
+      WHERE l.strategy_name = $1
+      ORDER BY day, l.notional_usd DESC
+    `,
+    [strategy]
+  );
+  const day_legs: Record<string, any[]> = {};
+  for (const row of dayLegRows) {
+    (day_legs[row.day] ??= []).push({
+      market: String(row.symbol).split('/')[0],
+      qty: Number(row.qty),
+      entry: Number(row.entry_price),
+      mark: Number(row.mark_price),
+      notional: Number(row.notional_usd),
+      price_pnl: Number(row.price_pnl),
+      funding: Number(row.funding_pnl),
+    });
+  }
   const capital = Number(open?.capital_usd ?? latest?.equity_usd ?? 0);
   const risk = paperRisk(
     equity.map((row) => ({ ts: row.ts, equity: Number(row.equity_usd) })),
@@ -178,6 +232,22 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
           status: open.status,
         }
       : null,
+    last_rebalance: rebalance
+      ? {
+          ended_at: rebalance.ended_at,
+          signal_day: rebalance.signal_day,
+          trade_count: Number(rebalance.trade_count),
+          backfilled: rebalance.status === 'BACKFILLED',
+        }
+      : null,
+    last_run: latestRun
+      ? {
+          ended_at: latestRun.ended_at,
+          signal_day: latestRun.signal_day,
+          held: strategy !== 'n_new_listing_short' && Number(latestRun.trade_count) === 0,
+          reason: Number(latestRun.trade_count) === 0 ? heldReason(latestRun.note) : null,
+        }
+      : null,
     trades: trades.map((row) => ({
       symbol: String(row.symbol).split('/')[0],
       side: row.side,
@@ -185,6 +255,7 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
       price: Number(row.price),
       notional: Number(row.notional_usd),
     })),
+    day_legs,
     legs: legs.map((row) => ({
       market: String(row.symbol).split('/')[0],
       qty: Number(row.qty),

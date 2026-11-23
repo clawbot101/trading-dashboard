@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import useSWR from 'swr';
 import { formatPnl } from '../../lib/format';
 import PnlChart from '../../components/PnlChart';
@@ -45,6 +45,7 @@ function PaperBook({ strategy }: { strategy: string }) {
   });
   const [sortKey, setSortKey] = useState<SortKey>('notional');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+  const [openDay, setOpenDay] = useState<string | null>(null);
 
   function onSort(key: SortKey) {
     if (key === sortKey) {
@@ -166,10 +167,32 @@ function PaperBook({ strategy }: { strategy: string }) {
           />
         </div>
       ) : null}
+      {body?.last_rebalance || body?.last_run ? (
+        <div className="panel p-3 text-xs space-y-1">
+          <div className="text-hl-secondary">
+            Last rebalance:{' '}
+            <span className="font-num text-hl-text">
+              {body.last_rebalance ? `${String(body.last_rebalance.ended_at).slice(0, 16)} UTC` : '—'}
+            </span>
+            {body.last_rebalance?.signal_day ? ` · signal day ${body.last_rebalance.signal_day}` : ''}
+            {body.last_rebalance ? ` · ${body.last_rebalance.trade_count} trades` : ''}
+            {body.last_rebalance?.backfilled ? ' · backfilled (run was held, data arrived later)' : ''}
+          </div>
+          {body.last_run?.held ? (
+            <div className="text-hl-loss">
+              Latest run {String(body.last_run.ended_at).slice(0, 16)} UTC held, no rebalance.
+              {body.last_run.reason ? ` ${body.last_run.reason}` : ''}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {body?.open_cycle ? (
         <div className="text-xs text-hl-secondary">
-          Open book from {String(body.open_cycle.ended_at).slice(0, 16)} UTC, signal day {body.open_cycle.signal_day}.
-          Fees are zero because no order was sent. Latest mark: {latest ? String(latest.ts).slice(0, 16) : '—'} UTC (hour bar close).
+          Open book from {String(body.open_cycle.ended_at).slice(0, 16)} UTC, signal day {body.open_cycle.signal_day}.{' '}
+          {strategy === 'n_new_listing_short'
+            ? 'Fees are 4.5 bps on weight traded. A flat day has none.'
+            : 'Fees are zero because no order was sent.'}{' '}
+          Latest mark: {latest ? String(latest.ts).slice(0, 16) : '—'} UTC (hour bar close).
         </div>
       ) : null}
       {body?.legs?.length ? (
@@ -247,14 +270,73 @@ function PaperBook({ strategy }: { strategy: string }) {
               </tr>
             </thead>
             <tbody>
-              {[...daily].reverse().map(([day, row]) => (
-                <tr key={day}>
-                  <td className="px-3 py-2 font-num">{day}</td>
-                  <td className="px-3 py-2 font-num text-right">{money(row.equity_change)}</td>
-                  <td className="px-3 py-2 font-num text-right">{money(row.funding_change)}</td>
-                  <td className="px-3 py-2 font-num text-right">{row.end_equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                </tr>
-              ))}
+              {[...daily].reverse().map(([day, row]) => {
+                const open = openDay === day;
+                const dayPositions: any[] = body?.day_legs?.[day] ?? [];
+                return (
+                  <Fragment key={day}>
+                    <tr
+                      onClick={() => setOpenDay(open ? null : day)}
+                      className={`cursor-pointer ${open ? 'bg-hl-accent/10' : 'hover:bg-hl-hover'}`}
+                    >
+                      <td className="px-3 py-2 font-num">{day}</td>
+                      <td className="px-3 py-2 font-num text-right">{money(row.equity_change)}</td>
+                      <td className="px-3 py-2 font-num text-right">{money(row.funding_change)}</td>
+                      <td className="px-3 py-2 font-num text-right">{row.end_equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
+                    </tr>
+                    {open ? (
+                      <tr>
+                        <td colSpan={4} className="px-3 pb-3 pt-1">
+                          <div className="text-xs text-hl-muted pb-1">
+                            Positions at last hourly mark of {day} UTC ({dayPositions.length} legs)
+                          </div>
+                          {dayPositions.length ? (
+                            <table className="w-full text-xs">
+                              <thead>
+                                <tr className="text-[10px] uppercase tracking-wide text-hl-muted">
+                                  <th className="pb-1 text-left font-normal">Market</th>
+                                  <th className="pb-1 text-right font-normal">Size</th>
+                                  <th className="pb-1 text-right font-normal">Notional</th>
+                                  <th className="pb-1 text-right font-normal">Entry → Mark</th>
+                                  <th className="pb-1 text-right font-normal">Price PnL</th>
+                                  <th className="pb-1 text-right font-normal">Funding</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {dayPositions.map((leg) => (
+                                  <tr key={leg.market}>
+                                    <td className={`py-1 font-medium ${leg.qty > 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                                      {leg.market} <span className="text-hl-muted">{leg.qty > 0 ? 'LONG' : 'SHORT'}</span>
+                                    </td>
+                                    <td className="py-1 font-num text-right">
+                                      {Math.abs(leg.qty).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                    </td>
+                                    <td className="py-1 font-num text-right">
+                                      ${leg.notional.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                    </td>
+                                    <td className="py-1 font-num text-right">
+                                      {leg.entry.toLocaleString(undefined, { maximumFractionDigits: 6 })} →{' '}
+                                      {leg.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}
+                                    </td>
+                                    <td className={`py-1 font-num text-right ${leg.price_pnl >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                                      {formatPnl(leg.price_pnl)}
+                                    </td>
+                                    <td className={`py-1 font-num text-right ${leg.funding >= 0 ? 'text-hl-profit' : 'text-hl-loss'}`}>
+                                      {formatPnl(leg.funding)}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <div className="text-xs text-hl-muted py-1">No positions that day.</div>
+                          )}
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -294,7 +376,10 @@ export default function PaperPage() {
               <div className="text-sm font-medium">{book.title}</div>
               <div className="text-xs text-hl-secondary">{book.blurb}</div>
               <div className="text-xs text-hl-muted">
-                Started {book.started_at ? fmtUtc(book.started_at) : '—'} UTC
+                First trade {book.started_at ? fmtUtc(book.started_at) : '—'} UTC
+              </div>
+              <div className="text-xs text-hl-muted">
+                Last rebalance {book.last_rebalance_at ? fmtUtc(book.last_rebalance_at) : '—'} UTC
               </div>
               <div className="font-num text-sm">
                 Equity {book.equity === null ? '—' : formatPnl(book.equity).replace('+', '')}
