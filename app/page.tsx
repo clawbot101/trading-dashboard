@@ -670,6 +670,14 @@ const STRATEGY_NOTES: Record<string, { title: string; lines: string[] }> = {
       'The averaged book is then sized at 0.72x. If the LunarCrush panel is missing or stale, the open sleeves are kept. No stops.',
     ],
   },
+  mw_majors_weak_live: {
+    title: 'MW · majors vs weak alts',
+    lines: [
+      'Market-neutral. Each day it goes long BTC, ETH, HYPE, ZEC and SOL, and shorts the 5 alts whose LunarCrush social dominance fell most versus their own 30-day history, 10% of the book each.',
+      'Universe is the top 60 Hyperliquid perps by 30-day median of close × volume. PAXG and the majors are not shorted. If fewer than 15 alts score, there is no short leg that day.',
+      'Legs are sized on a fixed notional book, not on the wallet balance, so gross leverage on the wallet is above 1x. The signal uses the LunarCrush bar from two days before the run. The book is replaced at 00:45 UTC. No stops.',
+    ],
+  },
 };
 
 function StrategyNote({ name }: { name: string }) {

@@ -4,7 +4,21 @@
 
 import { query } from './db';
 
-export const PAPER_PROFILES: Record<string, { title: string; blurb: string; overview: string[] }> = {
+/**
+ * One entry per paper book. Add an entry whenever a new paper strategy is started:
+ * title and blurb (short, shown on the book card), overview (rules), fee_note (cost line under the book),
+ * flat_on_empty (true when a cycle with no trades means a flat day, false when it means "held").
+ * A book without an entry still shows up, with its latest cycle note as the description.
+ */
+export type PaperProfile = {
+  title: string;
+  blurb: string;
+  overview: string[];
+  fee_note: string;
+  flat_on_empty: boolean;
+};
+
+export const PAPER_PROFILES: Record<string, PaperProfile> = {
   mw_majors_weak: {
     title: 'MW · majors vs weak alts',
     blurb: 'Long five majors, short the five alts whose social dominance fell the most. 1x on $10,000.',
@@ -13,6 +27,8 @@ export const PAPER_PROFILES: Record<string, { title: string; blurb: string; over
       'Universe: top 60 Hyperliquid perps by 30-day median of close × volume. PAXG and the majors are not shorted. If fewer than 15 alts score, there is no short leg that day.',
       'Signal uses the LunarCrush bar from two days before the run. Rebalance 00:45 UTC. No stops, no risk governor, and no fees in the paper PnL.',
     ],
+    fee_note: 'Fees are zero because no order was sent.',
+    flat_on_empty: false,
   },
   n_new_listing_short: {
     title: 'Recent listings vs liquid hedge',
@@ -23,6 +39,31 @@ export const PAPER_PROFILES: Record<string, { title: string; blurb: string; over
       'Long hedge: those top 10, equal weight, and the total long matches the total short. No qualifying short means the book is flat. A name leaves at day 90, when its volume falls under $2m, when it joins the top 10, or when 5 younger names qualify.',
       'Costs: 4.5 bps of capital per unit of weight traded, including the open. Funding is the real Hyperliquid hourly rate. Capital $10,000, separate from the MW paper book and from live trading.',
     ],
+    fee_note: 'Fees are 4.5 bps on weight traded. A flat day has none.',
+    flat_on_empty: true,
+  },
+  l4_bot_fade: {
+    title: 'L4 · low posts-per-author, liquid hedge (paper)',
+    blurb: 'Short the 5 names with the fewest posts per author, hedged long the 10 most liquid perps. 0.72x on $10,000.',
+    overview: [
+      'Paper copy of L4. Same top-60 universe and rules as the live book: the signal day is two days before the run, and the book is set at 00:15 UTC.',
+      'Each day, short the 5 names with the lowest posts per author, 10% each, and hedge long the 10 most liquid names, 5% each. Five daily sleeves are averaged and the book is sized at 0.72x. A sleeve with fewer than 20 names is flat for that day.',
+      'It is a dry run against a flat account, with its own $10,000. The live L4 wallet was closed on 2026-11-23, and the paper book started on 2026-11-24 00:15 UTC. The sleeve history carried over, so the first paper book already held the full five-sleeve average.',
+      'Costs: 4.5 bps of capital per unit of weight traded. Funding is the real Hyperliquid hourly rate. No stops.',
+    ],
+    fee_note: 'Fees are 4.5 bps on weight traded. A flat day has none.',
+    flat_on_empty: true,
+  },
+  hip3_stock_reversal: {
+    title: 'HIP-3 stock 1-day reversal',
+    blurb: 'Long the 5 HIP-3 stock perps that fell most yesterday, short the 5 that rose most. $10,000.',
+    overview: [
+      'Universe: HIP-3 single-stock perps only. Indices, ETFs, commodities, FX, rates, crypto and pre-IPO names are left out. Top 30 by 30-day median dollar volume, with at least 20 days of data. A stock listed on several DEXs keeps its most traded listing.',
+      'Signal day D is the daily candle that closes at 00:00 UTC on D+1. Long the 5 lowest 1-day log returns and short the 5 highest, 10% of capital each. Fewer than 12 names makes the book flat. The book is set daily at 00:00 UTC and filled at the 1h open.',
+      'Costs: 3 bps of capital per unit of weight traded, which assumes limit orders. At 10 bps taker costs the research Sharpe falls from 1.99 to 0.82. Funding is the real HIP-3 hourly rate. Source: Golden Pear research, 23 Nov 2026.',
+    ],
+    fee_note: 'Fees are 3 bps on weight traded (limit-order assumption). A flat day has none.',
+    flat_on_empty: true,
   },
 };
 
@@ -64,14 +105,30 @@ export function paperRisk(points: { ts: string | Date; equity: number }[], capit
   };
 }
 
-function profileFor(strategy: string) {
-  return (
-    PAPER_PROFILES[strategy] ?? {
-      title: strategy,
-      blurb: 'Paper book. Its own capital, separate from live.',
-      overview: [],
-    }
-  );
+export function flatOnEmpty(strategy: string): boolean {
+  return PAPER_PROFILES[strategy]?.flat_on_empty ?? false;
+}
+
+/**
+ * Profile for a book. A strategy with no PAPER_PROFILES entry still gets a description,
+ * taken from its latest cycle note, so a new paper book is never shown blank.
+ */
+function profileFor(strategy: string, latestNote?: unknown): PaperProfile {
+  const known = PAPER_PROFILES[strategy];
+  if (known) return known;
+  const lines = String(latestNote ?? '')
+    .split(/;\s+|\.\s+(?=[A-Z])/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, 5)
+    .map((part) => (part.length > 400 ? `${part.slice(0, 397)}...` : part));
+  return {
+    title: strategy.replace(/_/g, ' '),
+    blurb: 'Paper book. No written description yet; the rules below come from its latest cycle note.',
+    overview: lines,
+    fee_note: 'Fees: see the rules above.',
+    flat_on_empty: false,
+  };
 }
 
 export async function listPaperBooks() {
@@ -81,7 +138,8 @@ export async function listPaperBooks() {
              MIN(c.ended_at) FILTER (WHERE c.trade_count > 0 OR c.status = 'BACKFILLED') AS started_at,
              MAX(c.ended_at) FILTER (WHERE c.trade_count > 0) AS last_trade_at,
              MAX(c.ended_at) AS last_run_at,
-             (ARRAY_AGG(c.capital_usd ORDER BY c.ended_at DESC))[1] AS capital_usd
+             (ARRAY_AGG(c.capital_usd ORDER BY c.ended_at DESC))[1] AS capital_usd,
+             (ARRAY_AGG(c.note ORDER BY c.ended_at DESC))[1] AS latest_note
       FROM paper_cycles c
       GROUP BY c.strategy_name
       ORDER BY started_at NULLS LAST
@@ -102,9 +160,9 @@ export async function listPaperBooks() {
     );
     books.push({
       strategy: row.strategy_name,
-      ...profileFor(row.strategy_name),
+      ...profileFor(row.strategy_name, row.latest_note),
       started_at: row.started_at,
-      last_rebalance_at: row.strategy_name === 'n_new_listing_short' ? row.last_run_at : row.last_trade_at,
+      last_rebalance_at: flatOnEmpty(row.strategy_name) ? row.last_run_at : row.last_trade_at,
       last_run_at: row.last_run_at,
       capital,
       equity,
@@ -145,9 +203,9 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
   // Current book = the latest cycle that placed trades. Later cycles with no trades mean "held".
   const open = cycles.find((row) => Number(row.trade_count) > 0) ?? cycles[0];
   // Latest run of any kind. For MW a run with no trades was held (usually LunarCrush coverage).
-  // Book N always rebalances: a flat day is a real decision, so its latest run is its rebalance.
+  // Flat-on-empty books (Book N, L4, HIP-3) always rebalance: a flat day is a real decision, so the latest run is the rebalance.
   const latestRun = cycles[0] ?? null;
-  const rebalance = strategy === 'n_new_listing_short' ? latestRun : open;
+  const rebalance = flatOnEmpty(strategy) ? latestRun : open;
   const heldReason = (note: unknown) => {
     const parts = String(note ?? '').split('; ');
     const alert = parts.find((part) => part.includes('ALERT')) ?? parts.find((part) => part.includes('held:'));
@@ -223,7 +281,7 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
   );
   return {
     strategy,
-    profile: profileFor(strategy),
+    profile: profileFor(strategy, cycles[0]?.note),
     first_trade_at: firstTrade?.ended_at ?? null,
     capital,
     open_cycle: open
@@ -247,7 +305,7 @@ export async function getPaperBook(strategy = 'mw_majors_weak') {
       ? {
           ended_at: latestRun.ended_at,
           signal_day: latestRun.signal_day,
-          held: strategy !== 'n_new_listing_short' && Number(latestRun.trade_count) === 0,
+          held: !flatOnEmpty(strategy) && Number(latestRun.trade_count) === 0,
           reason: Number(latestRun.trade_count) === 0 ? heldReason(latestRun.note) : null,
         }
       : null,

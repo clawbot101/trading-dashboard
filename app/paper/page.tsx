@@ -189,9 +189,7 @@ function PaperBook({ strategy }: { strategy: string }) {
       {body?.open_cycle ? (
         <div className="text-xs text-hl-secondary">
           Open book from {String(body.open_cycle.ended_at).slice(0, 16)} UTC, signal day {body.open_cycle.signal_day}.{' '}
-          {strategy === 'n_new_listing_short'
-            ? 'Fees are 4.5 bps on weight traded. A flat day has none.'
-            : 'Fees are zero because no order was sent.'}{' '}
+          {body.profile?.fee_note ?? ''}{' '}
           Latest mark: {latest ? String(latest.ts).slice(0, 16) : '—'} UTC (hour bar close).
         </div>
       ) : null}
