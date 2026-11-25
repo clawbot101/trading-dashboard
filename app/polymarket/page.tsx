@@ -22,6 +22,14 @@ const VARIANT_COLOR: Record<string, string> = {
   maker_a: '#f59e0b',
   maker_b: '#f472b6',
 };
+// Per-round PnL column for each variant (see getPolymarketRounds aliases).
+const ROUND_PNL_KEY: Record<string, string> = {
+  'taker_L0.2': 'pnl_t02',
+  'taker_L0.5': 'pnl_t05',
+  'taker_L1.0': 'pnl_t10',
+  maker_a: 'pnl_a',
+  maker_b: 'pnl_b',
+};
 const START_TOTAL = 10000;
 const ROUND_SECONDS = 300;
 
@@ -85,7 +93,7 @@ export default function PolymarketPage() {
       let level = start;
       const points = [{ time: Number(at[0].t0), value: start }];
       for (const r of at) {
-        level += Number(r[v] ?? 0);
+        level += Number(r[ROUND_PNL_KEY[v]] ?? 0);
         points.push({ time: Number(r.t0) + ROUND_SECONDS, value: level });
       }
       return { name: VARIANT_LABEL[v], color: VARIANT_COLOR[v], points, last: level, key: v };
