@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import useSWR from 'swr';
+import PmEquityChart from '../../components/PmEquityChart';
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -14,6 +15,15 @@ const VARIANT_LABEL: Record<string, string> = {
   maker_b: 'Maker b (cancel at t0 + 5 s)',
 };
 const VARIANTS = ['taker_L0.2', 'taker_L0.5', 'taker_L1.0', 'maker_a', 'maker_b'];
+const VARIANT_COLOR: Record<string, string> = {
+  'taker_L0.2': '#38bdf8',
+  'taker_L0.5': '#22c55e',
+  'taker_L1.0': '#a78bfa',
+  maker_a: '#f59e0b',
+  maker_b: '#f472b6',
+};
+const START_TOTAL = 10000;
+const ROUND_SECONDS = 300;
 
 function utc(ts: number | string | null | undefined) {
   if (ts === null || ts === undefined || ts === '') return '—';
@@ -41,12 +51,46 @@ function num(n: number | null | undefined, dp = 2) {
 export default function PolymarketPage() {
   const { data, error, isLoading } = useSWR('/api/polymarket', fetcher, { refreshInterval: 60000 });
   const [offset, setOffset] = useState(-10);
+  const [chartMode, setChartMode] = useState<'pnl' | 'total'>('pnl');
   const body = data?.data;
   const desc = body?.description;
   const status = body?.status;
   const summary: any[] = body?.summary ?? [];
   const daily: any[] = body?.daily ?? [];
-  const recent: any[] = body?.recent ?? [];
+  const rounds: any[] = body?.rounds ?? [];
+
+  // One line per variant. 'total' starts at $10,000; 'pnl' starts at 0. $100 fixed stake, no compounding.
+  // Every decision for the selected decision time. Newest first in the table.
+  const roundRows = rounds.filter((r) => Number(r.T_offset) === offset).slice(-50).reverse();
+
+  // Price paid per round for the selected decision time: taker 0.5 s fill price and maker b bid.
+  const priceSeries = useMemo(() => {
+    const at = rounds.filter((r) => Number(r.T_offset) === offset && r.traded);
+    const taker = at.filter((r) => r.px_t05 !== null).map((r) => ({ time: Number(r.t0) + 30, value: Number(r.px_t05) }));
+    const maker = at.filter((r) => r.usd_b).map((r) => ({ time: Number(r.t0) + 30, value: Number(r.bid_b) }));
+    const ask = at.filter((r) => r.ask !== null).map((r) => ({ time: Number(r.t0) + 30, value: Number(r.ask) }));
+    return [
+      { name: 'Taker 0.5 s price', color: '#22c55e', points: taker, key: 'pt' },
+      { name: 'Maker b bid', color: '#f472b6', points: maker, key: 'pm' },
+      { name: 'Ask at decision', color: '#94a3b8', points: ask, key: 'pa' },
+    ];
+  }, [rounds, offset]);
+
+  const equitySeries = useMemo(() => {
+    // Only rounds we actually traded and that have resolved; skipped rounds have no PnL.
+    const at = rounds.filter((r) => Number(r.T_offset) === offset && r.traded && r.won !== null);
+    if (!at.length) return [];
+    const start = chartMode === 'total' ? START_TOTAL : 0;
+    return VARIANTS.map((v) => {
+      let level = start;
+      const points = [{ time: Number(at[0].t0), value: start }];
+      for (const r of at) {
+        level += Number(r[v] ?? 0);
+        points.push({ time: Number(r.t0) + ROUND_SECONDS, value: level });
+      }
+      return { name: VARIANT_LABEL[v], color: VARIANT_COLOR[v], points, last: level, key: v };
+    });
+  }, [rounds, offset, chartMode]);
 
   const rowsAt = summary.filter((r) => Number(r.T_offset) === offset);
   const primary = summary.filter((r) => Number(r.T_offset) === -10);
@@ -89,7 +133,7 @@ export default function PolymarketPage() {
       {status ? (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           <div className="panel p-3">
-            <div className="text-xs text-hl-secondary">Markets seen</div>
+            <div className="text-xs text-hl-secondary">Rounds seen</div>
             <div className="font-num text-lg">{status.total_markets}</div>
           </div>
           <div className="panel p-3">
@@ -97,7 +141,7 @@ export default function PolymarketPage() {
             <div className="font-num text-lg">{status.resolved_markets}</div>
           </div>
           <div className="panel p-3">
-            <div className="text-xs text-hl-secondary">Latest market</div>
+            <div className="text-xs text-hl-secondary">Latest round</div>
             <div className="font-num text-sm">{utc(status.last_t0)}</div>
           </div>
           <div className="panel p-3">
@@ -106,7 +150,7 @@ export default function PolymarketPage() {
           </div>
         </div>
       ) : (
-        <div className="text-sm text-hl-secondary">No Polymarket markets recorded yet.</div>
+        <div className="text-sm text-hl-secondary">No Polymarket rounds recorded yet.</div>
       )}
 
       {tk || makers.length ? (
@@ -142,12 +186,12 @@ export default function PolymarketPage() {
 
       {rowsAt.length ? (
         <div className="panel p-3 overflow-x-auto">
-          <div className="text-xs text-hl-secondary mb-2">Decision time {offset} s · $100 per market · cumulative</div>
+          <div className="text-xs text-hl-secondary mb-2">Decision time {offset} s · $100 per round · cumulative · refreshed every 15 min (the chart and daily table update after each round)</div>
           <table className="w-full text-xs font-num">
             <thead>
               <tr className="text-hl-secondary">
                 <th className="text-left font-normal pb-1">Variant</th>
-                <th className="text-right font-normal">Markets</th>
+                <th className="text-right font-normal">Rounds</th>
                 <th className="text-right font-normal">Traded</th>
                 <th className="text-right font-normal">Fill rate</th>
                 <th className="text-right font-normal">Fills/day</th>
@@ -188,6 +232,49 @@ export default function PolymarketPage() {
         </div>
       ) : null}
 
+      {equitySeries.length ? (
+        <div className="panel p-3 space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-sm text-hl-text font-medium">
+              {chartMode === 'pnl' ? `PnL since start (decision time ${offset} s)` : `Account total from $10,000 (decision time ${offset} s)`}
+            </div>
+            <div className="flex gap-1">
+              {(['pnl', 'total'] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setChartMode(m)}
+                  className={`px-2 py-1 text-xs rounded border ${chartMode === m ? 'border-hl-accent text-hl-accent' : 'border-hl-border text-hl-secondary'}`}
+                >
+                  {m === 'pnl' ? 'PnL' : 'Account total'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="text-xs text-hl-muted">
+            $100 fixed stake per round, no compounding. Each line is a separate what-if account, not one combined account.
+          </div>
+          <PmEquityChart
+            series={equitySeries}
+            base={chartMode === 'total' ? START_TOTAL : 0}
+            baseTitle={chartMode === 'total' ? 'start' : '0'}
+            height={280}
+          />
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-num">
+            {equitySeries.map((s) => (
+              <div key={s.key} className="flex items-center gap-1">
+                <span className="inline-block w-3 h-0.5" style={{ backgroundColor: s.color }} />
+                <span className="text-hl-secondary">{VARIANT_LABEL[s.key].split(' (')[0]}</span>
+                <span className={s.last - (chartMode === 'total' ? START_TOTAL : 0) >= 0 ? 'text-hl-profit' : 'text-hl-loss'}>
+                  {chartMode === 'pnl'
+                    ? `${s.last >= 0 ? '+' : '-'}$${Math.abs(s.last).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    : `$${s.last.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {dailyRows.length ? (
         <div className="panel p-3 overflow-x-auto">
           <div className="text-xs text-hl-secondary mb-2">Daily PnL $ at {offset} s (cumulative in brackets)</div>
@@ -218,33 +305,60 @@ export default function PolymarketPage() {
         </div>
       ) : null}
 
-      {recent.length ? (
+      {priceSeries[0].points.length ? (
+        <div className="panel p-3 space-y-2">
+          <div className="text-sm text-hl-text font-medium">Prices paid per round at {offset} s</div>
+          <div className="text-xs text-hl-muted">
+            One point per traded round. Taker 0.5 s = the price we would have paid buying 0.5 s after the decision. Maker b = the bid we rested. Ask = best ask when we decided.
+          </div>
+          <PmEquityChart series={priceSeries} precision={3} height={240} />
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-num">
+            {priceSeries.map((s) => (
+              <div key={s.key} className="flex items-center gap-1">
+                <span className="inline-block w-3 h-0.5" style={{ backgroundColor: s.color }} />
+                <span className="text-hl-secondary">{s.name}</span>
+                <span className="text-hl-muted">{s.points.length} rounds</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {roundRows.length ? (
         <div className="panel p-3 overflow-x-auto">
-          <div className="text-xs text-hl-secondary mb-2">Last 20 markets at -10 s</div>
-          <table className="w-full text-xs font-num">
+          <div className="text-xs text-hl-secondary mb-2">
+            Every round at {offset} s, newest first (last 50). Prices are per share, 0 to 1. A share pays $1 if its side wins.
+          </div>
+          <table className="w-full text-xs font-num whitespace-nowrap">
             <thead>
               <tr className="text-hl-secondary">
-                <th className="text-left font-normal pb-1">Market start</th>
+                <th className="text-left font-normal pb-1">Round start (UTC)</th>
                 <th className="text-right font-normal">Side</th>
-                <th className="text-right font-normal">Gap bp</th>
-                <th className="text-right font-normal">Ask</th>
-                <th className="text-right font-normal">Traded</th>
+                <th className="text-right font-normal">BTC gap (bp)</th>
+                <th className="text-right font-normal">Ask at decision</th>
+                <th className="text-right font-normal">Taker 0.5 s price</th>
+                <th className="text-right font-normal">Taker 0.5 s filled</th>
+                <th className="text-right font-normal">Maker b bid</th>
+                <th className="text-right font-normal">Maker b filled $</th>
                 <th className="text-right font-normal">Winner</th>
-                <th className="text-right font-normal">Taker 0.5 PnL</th>
+                <th className="text-right font-normal">Taker 0.5 s PnL</th>
                 <th className="text-right font-normal">Maker b PnL</th>
               </tr>
             </thead>
             <tbody>
-              {recent.map((r) => (
-                <tr key={r.t0} className="border-t border-hl-border">
-                  <td className="py-1 text-left">{utc(Number(r.t0))}</td>
+              {roundRows.map((r) => (
+                <tr key={`${r.t0}-${r.T_offset}`} className="border-t border-hl-border">
+                  <td className="py-1 text-left">{utc(r.t0)}</td>
                   <td className="text-right">{r.side ?? '—'}</td>
                   <td className="text-right">{num(r.gap_bp, 1)}</td>
-                  <td className="text-right">{num(r.fav_best_ask, 2)}</td>
-                  <td className="text-right">{r.traded ? 'yes' : r.skip_reason || 'no'}</td>
-                  <td className="text-right">{r.winner ?? (r.status === 'ok' ? '—' : 'pending')}</td>
-                  <td className="text-right">{usd(r.pnl_taker_0_5_usd)}</td>
-                  <td className="text-right">{usd(r.pnl_maker_b_usd)}</td>
+                  <td className="text-right">{r.traded ? num(r.ask, 3) : <span className="text-hl-muted">skip: {r.skip_reason}</span>}</td>
+                  <td className="text-right">{r.traded && r.px_t05 !== null ? num(r.px_t05, 3) : '—'}</td>
+                  <td className="text-right">{r.fr_t05 !== null ? pct(r.fr_t05, 0) : '—'}</td>
+                  <td className="text-right">{num(r.bid_b, 3)}</td>
+                  <td className="text-right">{r.usd_b ? `$${Number(r.usd_b).toFixed(2)}` : 'no fill'}</td>
+                  <td className="text-right">{r.winner ?? 'pending'}</td>
+                  <td className="text-right">{r.traded ? usd(r.pnl_t05) : '—'}</td>
+                  <td className="text-right">{r.traded ? usd(r.pnl_b) : '—'}</td>
                 </tr>
               ))}
             </tbody>

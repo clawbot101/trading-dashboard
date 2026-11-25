@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import {
   PM_DESCRIPTION,
   getPolymarketDaily,
-  getPolymarketRecent,
+  getPolymarketRounds,
   getPolymarketStatus,
   getPolymarketSummary,
 } from '../../../lib/polymarket';
@@ -13,15 +13,15 @@ export const maxDuration = 30;
 
 export async function GET() {
   try {
-    const [status, summary, daily, recent] = await Promise.all([
+    const [status, summary, daily, rounds] = await Promise.all([
       getPolymarketStatus(),
       getPolymarketSummary(),
       getPolymarketDaily(),
-      getPolymarketRecent(20),
+      getPolymarketRounds(),
     ]);
     return NextResponse.json({
       ok: true,
-      data: { description: PM_DESCRIPTION, status, summary, daily, recent },
+      data: { description: PM_DESCRIPTION, status, summary, daily, rounds },
     });
   } catch (err: any) {
     return NextResponse.json(
